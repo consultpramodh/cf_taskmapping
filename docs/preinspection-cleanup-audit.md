@@ -17,7 +17,7 @@ Baseline: 2026-11-10 Apps Script live-source capture; branch preinspection. Stat
 
 ## Operational investigation
 
-The daily-slot wrapper may call the automation cycle repeatedly; each cycle invokes tmv3_refreshOperationalSourcesIfNeeded_(120,false). This is a cache-aware check, not proof that source reports are refreshed every batch. Inspect its behavior and production logs before changing refresh cadence. Check current authorized trigger ownership and exact schedules; current-user trigger inventory is incomplete across accounts/projects.
+The daily-slot wrapper may call the automation cycle repeatedly; each cycle invokes tmv3_refreshOperationalSourcesIfNeeded_(120,false). The helper returns CACHE_FRESH without refreshing when both master and operational caches are within their age thresholds. A stale or absent timestamp can trigger a master and/or transaction refresh. Repeated helper invocation is not proof of repeated report refresh; inspect live timestamps and execution logs before changing cadence. Check current authorized trigger ownership and exact schedules; current-user trigger inventory is incomplete across accounts/projects.
 
 ## Exit criteria
 
