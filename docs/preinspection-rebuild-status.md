@@ -4,7 +4,7 @@
 
 Created pure, fail-closed decision helpers for order classification, duplicate Location selection using an independently verified default, Task lifecycle, and preliminary payload validation. The helpers have no external side effects and are not called by the existing production worker. No runtime behavior changes by their presence alone.
 
-Local validation: 26 fixture assertions and syntax verification. Fixtures do not verify Striven response schema, Apps Script behavior, integration, notification output, event correctness, or outgoing network payloads.
+Local validation: 28 fixture assertions and syntax verification. Fixtures do not verify Striven response schema, Apps Script behavior, integration, notification output, event correctness, or outgoing network payloads.
 
 ## Required next stages
 
