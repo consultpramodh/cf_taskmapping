@@ -7,7 +7,7 @@ assert.equal(order({hasOrderEvidence:true,statusVerified:true,status:'APPROVED'}
 assert.equal(order({hasOrderEvidence:true,statusVerified:true,status:'PRE_APPROVAL'}).decision,'CONTINUE_PREINSPECTION');
 assert.equal(order({hasOrderEvidence:true,status:'APPROVED'}).decision,'REVIEW_ORDER_STATUS_UNVERIFIED');
 assert.equal(order({hasOrderEvidence:true,statusVerified:true,status:'IN_PROGRESS'}).decision,'REVIEW_ORDER_STATUS_UNSUPPORTED');
-const a={customerId:'1',customerVerified:true,locationListComplete:true,locations:[{id:10,customerId:1,addressMatch:true},{id:11,customerId:1,addressMatch:true}]};
+const a={calendarAddressPresent:true,customerId:'1',customerVerified:true,locationListComplete:true,locations:[{id:10,customerId:1,addressMatch:true},{id:11,customerId:1,addressMatch:true}]};
 assert.equal(loc(a).decision,'REVIEW_DEFAULT_LOCATION_UNVERIFIED');
 assert.equal(loc({...a,defaultLocationVerified:true,defaultLocationId:11}).locationId,'11');
 assert.equal(loc({...a,defaultLocationVerified:true,defaultLocationId:12}).decision,'REVIEW_DEFAULT_NOT_MATCHING_ADDRESS');
@@ -33,3 +33,24 @@ assert.equal(payload({nested:{field854:'x'}},'PATCH').decision,'REJECT_PROTECTED
 assert.equal(payload({SalesOrder:{Id:1}},'CREATE').decision,'REJECT_ORDER_ATTACHMENT');
 const cyclic={};cyclic.self=cyclic;assert.equal(payload(cyclic,'PATCH').decision,'REJECT_CYCLIC_PAYLOAD');
 console.log('PASS: task lifecycle and payload assertions');
+
+assert.equal(loc({...a,calendarAddressPresent:undefined}).decision,'REVIEW_CALENDAR_ADDRESS_EVIDENCE');
+assert.equal(loc({...a,calendarAddressPresent:false}).decision,'QUEUE_MISSING_ADDRESS_NOTICE');
+assert.equal(loc({...a,calendarAddressPresent:false,notificationStatus:'UNCERTAIN'}).decision,'REVIEW_NOTIFICATION_OUTCOME_NO_RETRY');
+assert.equal(loc({...a,calendarAddressPresent:false,notificationStatus:'SENT',noticeMatchesEventAndAddress:true}).decision,'REVIEW_PRIMARY_LOCATION_UNVERIFIED');
+assert.equal(loc({...a,calendarAddressPresent:false,notificationStatus:'SENT',noticeMatchesEventAndAddress:true,primaryLocationVerified:true,primaryLocationId:11}).basis,'PRIMARY_AFTER_NOTICE');
+assert.equal(loc({...a,calendarAddressPresent:false,notificationStatus:'SENT',noticeMatchesEventAndAddress:true,primaryLocationVerified:true,primaryLocationId:12}).decision,'REVIEW_PRIMARY_LOCATION_NOT_OWNED');
+console.log('PASS: missing-address notification and Primary Location sequence');
+
+assert.equal(loc({...a,calendarAddressPresent:false,notificationStatus:'SENT'}).decision,'REVIEW_NOTIFICATION_EVIDENCE');
+const flow=ctx.tmv3_piRebuildDryRun_;
+const base={order:{hasOrderEvidence:false},location:{...a,locations:[a.locations[0]]},task:{historyComplete:true,tasks:[],writeOutcomeUncertain:false},payload:{Name:'Example'}};
+assert.equal(flow(base).status,'DRY_RUN_READY_FOR_FURTHER_VERIFICATION');
+assert.equal(flow({...base,order:{hasOrderEvidence:true,statusVerified:true,status:'APPROVED'}}).status,'ROUTE_INSTALLATION');
+assert.equal(flow({...base,location:{...a,calendarAddressPresent:false}}).status,'QUEUE_MISSING_ADDRESS_NOTICE');
+assert.equal(flow({...base,task:{historyComplete:true,tasks:[{id:1,relationship:'SAME_VISIT',status:'COMPLETED'}]}}).status,'FULFILLED_NO_RECREATE');
+assert.equal(flow({...base,payload:{InfoCustomFields:[]}}).status,'REJECT_PROTECTED_FIELDS');
+assert.equal(flow(base).sideEffects,0);
+console.log('PASS: six connected-stage dry-run assertions');
+
+assert.equal(payload({nested:[{fieldId:854,value:'private'}]},'PATCH').decision,'REJECT_PROTECTED_FIELDS');

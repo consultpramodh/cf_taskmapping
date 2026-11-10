@@ -4446,6 +4446,13 @@ function tmv3_piRebuildClassifyOrder_(input) {
 
 function tmv3_piRebuildResolveLocation_(input) {
   input = input || {};
+  if (input.calendarAddressPresent !== true && input.calendarAddressPresent !== false)
+    return {decision:'REVIEW_CALENDAR_ADDRESS_EVIDENCE'};
+  if (input.calendarAddressPresent === false) {
+    if (input.notificationStatus === 'UNCERTAIN') return {decision:'REVIEW_NOTIFICATION_OUTCOME_NO_RETRY'};
+    if (input.notificationStatus !== 'SENT') return {decision:'QUEUE_MISSING_ADDRESS_NOTICE',fallback:'WAIT_FOR_NOTIFICATION'};
+    if (input.noticeMatchesEventAndAddress !== true) return {decision:'REVIEW_NOTIFICATION_EVIDENCE'};
+  }
   const id = String(input.customerId || '').trim();
   if (!/^[1-9]\d*$/.test(id) || input.customerVerified !== true || input.locationListComplete !== true || !Array.isArray(input.locations))
     return {decision:'REVIEW_LOCATION_EVIDENCE_INCOMPLETE'};
@@ -4456,8 +4463,17 @@ function tmv3_piRebuildResolveLocation_(input) {
       return {decision:'REVIEW_LOCATION_RECORD_INVALID'};
     seen[String(candidate.id)] = true;
     if (String(candidate.customerId || '') !== id) return {decision:'REVIEW_LOCATION_OWNERSHIP_CONFLICT'};
-    if (candidate.addressMatch === true) matches.push(candidate);
-    else if (candidate.addressMatch !== false) return {decision:'REVIEW_ADDRESS_MATCH_UNVERIFIED'};
+    if (input.calendarAddressPresent === true) {
+      if (candidate.addressMatch === true) matches.push(candidate);
+      else if (candidate.addressMatch !== false) return {decision:'REVIEW_ADDRESS_MATCH_UNVERIFIED'};
+    }
+  }
+  if (input.calendarAddressPresent === false) {
+    if (input.primaryLocationVerified !== true || !/^[1-9]\d*$/.test(String(input.primaryLocationId || '')))
+      return {decision:'REVIEW_PRIMARY_LOCATION_UNVERIFIED'};
+    const primary = input.locations.filter(function(x){return String(x.id)===String(input.primaryLocationId);});
+    if (primary.length !== 1) return {decision:'REVIEW_PRIMARY_LOCATION_NOT_OWNED'};
+    return {decision:'MATCH_LOCATION',locationId:String(primary[0].id),basis:'PRIMARY_AFTER_NOTICE'};
   }
   if (matches.length === 0) return {decision:'REVIEW_NO_MATCHING_LOCATION'};
   if (matches.length === 1) return {decision:'MATCH_LOCATION',locationId:String(matches[0].id),basis:'UNIQUE_ADDRESS'};
@@ -4501,10 +4517,30 @@ function tmv3_piRebuildValidatePayload_(payload,mode) {
     for (const key of Object.keys(value)) {
       const normalized=key.replace(/[^a-z0-9]/gi,'').toLowerCase();
       if (/^(infocustomfields|customfields|installnotes|field854|field852|field853|field860)$/.test(normalized)) return 'REJECT_PROTECTED_FIELDS';
+      if (/^(customfieldid|fieldid)$/.test(normalized) && /^(852|853|854|860)$/.test(String(value[key]))) return 'REJECT_PROTECTED_FIELDS';
       if (mode==='CREATE' && /^(salesorder|salesorderid|soid|orderid)$/.test(normalized)) return 'REJECT_ORDER_ATTACHMENT';
       const nested=visit(value[key]);if(nested)return nested;
     }
     seen.pop();return '';
   }
   const violation=visit(payload);return {decision:violation||'ACCEPT'};
+}
+
+/** Pure connected-stage preview. No Calendar, Striven, Sheet, trigger, or email actions. */
+function tmv3_piRebuildDryRun_(input) {
+  input=input||{};
+  const stages=[];
+  function step(name,result) {stages.push({stage:name,result:result});return result;}
+  const order=step('ORDER_CLASSIFICATION',tmv3_piRebuildClassifyOrder_(input.order));
+  if (['PREINSPECTION_ORDER_OPTIONAL','CONTINUE_PREINSPECTION'].indexOf(order.decision)<0)
+    return {status:order.decision,stages:stages,sideEffects:0};
+  const location=step('LOCATION',tmv3_piRebuildResolveLocation_(input.location));
+  if (location.decision!=='MATCH_LOCATION') return {status:location.decision,stages:stages,sideEffects:0};
+  const task=step('TASK_LIFECYCLE',tmv3_piRebuildSelectTask_(input.task));
+  if (task.decision==='FULFILLED_NO_RECREATE') return {status:task.decision,stages:stages,sideEffects:0};
+  if (['CREATE_TASK','REUSE_TASK'].indexOf(task.decision)<0) return {status:task.decision,stages:stages,sideEffects:0};
+  const mode=task.decision==='CREATE_TASK'?'CREATE':'PATCH';
+  const valid=step('PAYLOAD_CHECK',tmv3_piRebuildValidatePayload_(input.payload,mode));
+  if (valid.decision!=='ACCEPT') return {status:valid.decision,stages:stages,sideEffects:0};
+  return {status:'DRY_RUN_READY_FOR_FURTHER_VERIFICATION',stages:stages,sideEffects:0};
 }
