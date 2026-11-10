@@ -18749,6 +18749,12 @@ function onOpen() {
 
   ui.createMenu('Task Mapping V3')
     .addSubMenu(
+      ui.createMenu('Pre-Inspection')
+        .addItem('1. Run Read-Only Tests', 'tmv3_preInspectionRunAllReadOnlyTests')
+        .addItem('2. Refresh Operator View (Sheet Write)', 'tmv3_preInspectionRefreshOperatorView')
+        .addItem('3. Run Automation (Live Changes)', 'tmv3_runPreInspectionAutomation')
+    )
+    .addSubMenu(
       ui.createMenu('Operations')
         .addItem('Step 1 — Refresh Calendar Intake', 'tmv3_step1CalendarRun')
         .addItem('Step 2 — Refresh Eligibility', 'tmv3_step2CalendarRun')
