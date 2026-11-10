@@ -2,6 +2,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const ctx={};vm.createContext(ctx);vm.runInContext(fs.readFileSync('apps-script/30_PreInspection.gs','utf8').split('function tmv3_piRebuildClassifyOrder_').pop().replace(/^/, 'function tmv3_piRebuildClassifyOrder_'),ctx);
 const order=ctx.tmv3_piRebuildClassifyOrder_,loc=ctx.tmv3_piRebuildResolveLocation_;
 assert.equal(order({hasOrderEvidence:false}).decision,'PREINSPECTION_ORDER_OPTIONAL');
+assert.equal(order({}).decision,'REVIEW_ORDER_EVIDENCE_INCOMPLETE');
 assert.equal(order({hasOrderEvidence:true,statusVerified:true,status:'APPROVED'}).decision,'ROUTE_INSTALLATION');
 assert.equal(order({hasOrderEvidence:true,statusVerified:true,status:'PRE_APPROVAL'}).decision,'CONTINUE_PREINSPECTION');
 assert.equal(order({hasOrderEvidence:true,status:'APPROVED'}).decision,'REVIEW_ORDER_STATUS_UNVERIFIED');
@@ -16,11 +17,12 @@ assert.equal(loc({...a,locations:[{id:10,customerId:2,addressMatch:true}]}).deci
 assert.equal(loc({...a,locations:[{id:10,customerId:1,addressMatch:null}]}).decision,'REVIEW_ADDRESS_MATCH_UNVERIFIED');
 assert.equal(loc({...a,locations:[a.locations[0],a.locations[0]]}).decision,'REVIEW_LOCATION_RECORD_INVALID');
 assert.equal(loc({...a,locations:[]}).decision,'REVIEW_NO_MATCHING_LOCATION');
-console.log('PASS: 14 classification and Location decision assertions');
+console.log('PASS: classification and Location decision assertions');
 const task=ctx.tmv3_piRebuildSelectTask_,payload=ctx.tmv3_piRebuildValidatePayload_;
 assert.equal(task({}).decision,'REVIEW_TASK_HISTORY_INCOMPLETE');
-assert.equal(task({historyComplete:true,tasks:[]}).decision,'CREATE_TASK');
+assert.equal(task({historyComplete:true,tasks:[],writeOutcomeUncertain:false}).decision,'CREATE_TASK');
 assert.equal(task({historyComplete:true,tasks:[],writeOutcomeUncertain:true}).decision,'REVIEW_PRIOR_UNCERTAIN_CREATE');
+assert.equal(task({historyComplete:true,tasks:[]}).decision,'REVIEW_PRIOR_UNCERTAIN_CREATE');
 assert.equal(task({historyComplete:true,tasks:[{id:1,relationship:'SAME_VISIT',status:'OPEN'}]}).decision,'REUSE_TASK');
 assert.equal(task({historyComplete:true,tasks:[{id:1,relationship:'SAME_VISIT',status:'COMPLETED'}]}).decision,'FULFILLED_NO_RECREATE');
 assert.equal(task({historyComplete:true,tasks:[{id:1,relationship:'UNKNOWN',status:'OPEN'}]}).decision,'REVIEW_TASK_RELATIONSHIP');
@@ -30,4 +32,4 @@ assert.equal(payload({InfoCustomFields:[]},'CREATE').decision,'REJECT_PROTECTED_
 assert.equal(payload({nested:{field854:'x'}},'PATCH').decision,'REJECT_PROTECTED_FIELDS');
 assert.equal(payload({SalesOrder:{Id:1}},'CREATE').decision,'REJECT_ORDER_ATTACHMENT');
 const cyclic={};cyclic.self=cyclic;assert.equal(payload(cyclic,'PATCH').decision,'REJECT_CYCLIC_PAYLOAD');
-console.log('PASS: 12 task lifecycle and payload assertions');
+console.log('PASS: task lifecycle and payload assertions');

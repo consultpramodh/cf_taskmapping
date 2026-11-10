@@ -4437,7 +4437,8 @@ function tmv3_piVerifiedOwnerEmployee_(eventRecord) {
  */
 function tmv3_piRebuildClassifyOrder_(input) {
   input = input || {};
-  if (!input.hasOrderEvidence) return {decision:'PREINSPECTION_ORDER_OPTIONAL'};
+  if (input.hasOrderEvidence === false) return {decision:'PREINSPECTION_ORDER_OPTIONAL'};
+  if (input.hasOrderEvidence !== true) return {decision:'REVIEW_ORDER_EVIDENCE_INCOMPLETE'};
   if (input.statusVerified !== true) return {decision:'REVIEW_ORDER_STATUS_UNVERIFIED'};
   if (input.status === 'APPROVED') return {decision:'ROUTE_INSTALLATION'};
   if (input.status === 'PRE_APPROVAL') return {decision:'CONTINUE_PREINSPECTION'};
@@ -4447,7 +4448,7 @@ function tmv3_piRebuildClassifyOrder_(input) {
 function tmv3_piRebuildResolveLocation_(input) {
   input = input || {};
   const id = String(input.customerId || '').trim();
-  if (!id || input.customerVerified !== true || input.locationListComplete !== true || !Array.isArray(input.locations))
+  if (!/^[1-9]\d*$/.test(id) || input.customerVerified !== true || input.locationListComplete !== true || !Array.isArray(input.locations))
     return {decision:'REVIEW_LOCATION_EVIDENCE_INCOMPLETE'};
   const seen = {};
   const matches = [];
@@ -4486,7 +4487,7 @@ function tmv3_piRebuildSelectTask_(input) {
     if (task.status==='COMPLETED') return {decision:'FULFILLED_NO_RECREATE',taskId:String(task.id)};
     return {decision:'REVIEW_TASK_STATUS'};
   }
-  if (input.writeOutcomeUncertain===true) return {decision:'REVIEW_PRIOR_UNCERTAIN_CREATE'};
+  if (input.writeOutcomeUncertain!==false) return {decision:'REVIEW_PRIOR_UNCERTAIN_CREATE'};
   return {decision:'CREATE_TASK'};
 }
 
