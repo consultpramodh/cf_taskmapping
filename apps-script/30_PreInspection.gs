@@ -4430,3 +4430,81 @@ function tmv3_piVerifiedOwnerEmployee_(eventRecord) {
     blocker:ownerCalendar ? 'PI_CALENDAR_OWNER_NOT_VERIFIED_IN_EXECUTION_CONFIG' :
       'PI_CALENDAR_OWNER_MISSING_NO_WRITE'};
 }
+
+/**
+ * Pre-Inspection rebuild: pure decision functions, not wired to the live worker.
+ * Facts must come from verified source reads; these helpers never perform writes.
+ */
+function tmv3_piRebuildClassifyOrder_(input) {
+  input = input || {};
+  if (!input.hasOrderEvidence) return {decision:'PREINSPECTION_ORDER_OPTIONAL'};
+  if (input.statusVerified !== true) return {decision:'REVIEW_ORDER_STATUS_UNVERIFIED'};
+  if (input.status === 'APPROVED') return {decision:'ROUTE_INSTALLATION'};
+  if (input.status === 'PRE_APPROVAL') return {decision:'CONTINUE_PREINSPECTION'};
+  return {decision:'REVIEW_ORDER_STATUS_UNSUPPORTED'};
+}
+
+function tmv3_piRebuildResolveLocation_(input) {
+  input = input || {};
+  const id = String(input.customerId || '').trim();
+  if (!id || input.customerVerified !== true || input.locationListComplete !== true || !Array.isArray(input.locations))
+    return {decision:'REVIEW_LOCATION_EVIDENCE_INCOMPLETE'};
+  const seen = {};
+  const matches = [];
+  for (const candidate of input.locations) {
+    if (!candidate || !/^[1-9]\d*$/.test(String(candidate.id || '')) || seen[String(candidate.id)])
+      return {decision:'REVIEW_LOCATION_RECORD_INVALID'};
+    seen[String(candidate.id)] = true;
+    if (String(candidate.customerId || '') !== id) return {decision:'REVIEW_LOCATION_OWNERSHIP_CONFLICT'};
+    if (candidate.addressMatch === true) matches.push(candidate);
+    else if (candidate.addressMatch !== false) return {decision:'REVIEW_ADDRESS_MATCH_UNVERIFIED'};
+  }
+  if (matches.length === 0) return {decision:'REVIEW_NO_MATCHING_LOCATION'};
+  if (matches.length === 1) return {decision:'MATCH_LOCATION',locationId:String(matches[0].id),basis:'UNIQUE_ADDRESS'};
+  if (input.defaultLocationVerified !== true || !/^[1-9]\d*$/.test(String(input.defaultLocationId || '')))
+    return {decision:'REVIEW_DEFAULT_LOCATION_UNVERIFIED'};
+  const chosen = matches.filter(function(x){ return String(x.id) === String(input.defaultLocationId); });
+  if (chosen.length !== 1) return {decision:'REVIEW_DEFAULT_NOT_MATCHING_ADDRESS'};
+  return {decision:'MATCH_LOCATION',locationId:String(chosen[0].id),basis:'VERIFIED_DEFAULT_AMONG_DUPLICATES'};
+}
+
+function tmv3_piRebuildSelectTask_(input) {
+  input=input||{};
+  if (input.historyComplete !== true || !Array.isArray(input.tasks)) return {decision:'REVIEW_TASK_HISTORY_INCOMPLETE'};
+  const ids={}, linked=[];
+  for (const task of input.tasks) {
+    if (!task || !/^[1-9]\d*$/.test(String(task.id||'')) || ids[String(task.id)]) return {decision:'REVIEW_TASK_HISTORY_INVALID'};
+    ids[String(task.id)]=true;
+    if (task.relationship === 'CONFLICT' || task.relationship === 'UNKNOWN') return {decision:'REVIEW_TASK_RELATIONSHIP'};
+    if (task.relationship === 'SAME_VISIT') linked.push(task);
+    else if (task.relationship !== 'OTHER_VISIT') return {decision:'REVIEW_TASK_RELATIONSHIP'};
+  }
+  if (linked.length>1) return {decision:'REVIEW_MULTIPLE_SAME_VISIT_TASKS'};
+  if (linked.length===1) {
+    const task=linked[0];
+    if (task.status==='OPEN') return {decision:'REUSE_TASK',taskId:String(task.id)};
+    if (task.status==='COMPLETED') return {decision:'FULFILLED_NO_RECREATE',taskId:String(task.id)};
+    return {decision:'REVIEW_TASK_STATUS'};
+  }
+  if (input.writeOutcomeUncertain===true) return {decision:'REVIEW_PRIOR_UNCERTAIN_CREATE'};
+  return {decision:'CREATE_TASK'};
+}
+
+function tmv3_piRebuildValidatePayload_(payload,mode) {
+  if (!payload || typeof payload!=='object' || Array.isArray(payload)) return {decision:'REJECT_INVALID_PAYLOAD'};
+  if (mode!=='CREATE' && mode!=='PATCH') return {decision:'REJECT_INVALID_MODE'};
+  const seen=[];
+  function visit(value) {
+    if (!value || typeof value!=='object') return '';
+    if (seen.indexOf(value)!==-1) return 'REJECT_CYCLIC_PAYLOAD';
+    seen.push(value);
+    for (const key of Object.keys(value)) {
+      const normalized=key.replace(/[^a-z0-9]/gi,'').toLowerCase();
+      if (/^(infocustomfields|customfields|installnotes|field854|field852|field853|field860)$/.test(normalized)) return 'REJECT_PROTECTED_FIELDS';
+      if (mode==='CREATE' && /^(salesorder|salesorderid|soid|orderid)$/.test(normalized)) return 'REJECT_ORDER_ATTACHMENT';
+      const nested=visit(value[key]);if(nested)return nested;
+    }
+    seen.pop();return '';
+  }
+  const violation=visit(payload);return {decision:violation||'ACCEPT'};
+}
