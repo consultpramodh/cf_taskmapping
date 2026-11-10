@@ -2,9 +2,9 @@
 
 ## Staged decision components — not connected
 
-Created pure, fail-closed decision helpers for order classification, duplicate Location selection using an independently verified default, Task lifecycle, and preliminary payload validation. The helpers have no external side effects and are not called by the existing production worker. No runtime behavior changes by their presence alone.
+Created pure, fail-closed decision helpers for order classification, duplicate Location selection using an independently verified default, Task lifecycle, and preliminary payload validation. The helpers have no external side effects and are not called by the existing production worker. Separately, the candidate removes the shared-calendar early return in the existing pre-create order guard: a parsed order number now receives the existing live status check, including Approved and In Progress holds. This change is in GitHub only and would change runtime behavior if deployed. It does not prove that all order references are parsed.
 
-Local validation: 28 fixture assertions and syntax verification. Fixtures do not verify Striven response schema, Apps Script behavior, integration, notification output, event correctness, or outgoing network payloads.
+Local validation: 28 staged decision assertions, four order guard cases, and syntax verification. Fixtures do not verify Striven response schema, Apps Script behavior, integration, notification output, event correctness, or outgoing network payloads.
 
 ## Required next stages
 
