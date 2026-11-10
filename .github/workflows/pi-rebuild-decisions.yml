@@ -1,0 +1,29 @@
+name: Pre-Inspection rebuild decision checks
+on:
+  push:
+    branches: [preinspection]
+    paths:
+      - apps-script/30_PreInspection.gs
+      - tests/preinspection/rebuild-decisions.test.cjs
+      - .github/workflows/pi-rebuild-decisions.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - apps-script/30_PreInspection.gs
+      - tests/preinspection/rebuild-decisions.test.cjs
+      - .github/workflows/pi-rebuild-decisions.yml
+permissions:
+  contents: read
+jobs:
+  decisions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify staged decision fixtures
+        run: node tests/preinspection/rebuild-decisions.test.cjs
+      - name: Verify Apps Script syntax
+        run: node --check < apps-script/30_PreInspection.gs
