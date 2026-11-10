@@ -1,0 +1,3 @@
+# Release process
+
+Deployment is disabled until the process is implemented and verified. Before any release: obtain fresh live source and durable backup; compare complete source fingerprint; reconcile changes and governing standards; run relevant and cross-vertical tests; promote a reviewed commit to main; require exact live baseline and single-writer control at deployment; read back all files. Stop on drift. Vertical branches never deploy. Audit legacy workflows and credentials separately. Existing triggers execute Apps Script HEAD, so changing HEAD can affect scheduled executions immediately.
