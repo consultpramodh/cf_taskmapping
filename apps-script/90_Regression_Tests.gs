@@ -4007,6 +4007,25 @@ function tmv3_preInspectionLockedStandardsRegression() {
  * standards, regression, auth and API-headroom gates all pass.
  * Target example: Jeff Acorn, customer #63164, Event ID below.
  */
+/**
+ * CF Tasks V3 — ONE-CLICK PRE-INSPECTION READ-ONLY AUDIT
+ * Platform: Google Apps Script (V8)
+ * REPLACE the previous tmv3_preInspectionRunAllReadOnlyTests function
+ * in the EXISTING 90_Regression_Tests.gs file. Do NOT leave two copies.
+ * Standard: 2026-11-10-r1
+ * Run: tmv3_preInspectionRunAllReadOnlyTests
+ *
+ * Explicitly excluded: production execution, email sending, report refresh,
+ * trigger installation, direct Script Properties mutations, fresh Step 7
+ * plan hydration (which upserts Task cache rows), and Calendar/Task mutation.
+ * Note: the existing Striven API client updates its request counter in Script
+ * Properties and may renew an authentication token/cache when needed.
+ *
+ * Reads the current PreInspection operator tab and Source Tasks cache;
+ * only external business-data API operation: ONE GET /v2/tasks/19694, provided
+ * standards, regression, auth and API-headroom gates all pass.
+ * Target example: Jeff Acorn, customer #63164, Event ID below.
+ */
 function tmv3_preInspectionRunAllReadOnlyTests() {
   const startedAt = new Date();
   const startedMs = Date.now();
@@ -4019,7 +4038,7 @@ function tmv3_preInspectionRunAllReadOnlyTests() {
     calendarTitle: '63164 - Jeff Acorn - (905) 904-3605',
     taskTitle: 'Jeff Acorn - 807 Ganton Rd, Uxbridge - (905) 904-3605'
   });
-  const runId = Utilities.formatDate(startedAt, 'America/Toronto', 'yyyyMMdd-HHmmss') + '-PI-R1-AUD2';
+  const runId = Utilities.formatDate(startedAt, 'America/Toronto', 'yyyyMMdd-HHmmss') + '-PI-R1-AUD3';
   const entries = [];
   const expectedTriggerHandlers = [
     'tmv3_preInspectionCheck0800',
@@ -4079,7 +4098,7 @@ function tmv3_preInspectionRunAllReadOnlyTests() {
       const detail = valid ? ('Completed; cases=' + String(casesCount(result)) +
         (result && result.counts ? '; trigger counts=' + trim(JSON.stringify(result.counts), 260) : '')) :
         ('Unexpected result: ' + trim(JSON.stringify(result), 400));
-      const actualStatus = valid ? 'PASS' : (result && result.status === 'BLOCKED' ? 'BLOCKED' : 'FAIL');
+      const actualStatus = valid ? 'PASS' : (result && (result.status === 'BLOCKED' || result.status === 'UNVERIFIED') ? result.status : 'FAIL');
       return add(id, phase, actualStatus, detail,
         Date.now() - t0, casesCount(result));
     } catch (err) {
@@ -4120,7 +4139,8 @@ function tmv3_preInspectionRunAllReadOnlyTests() {
     ['B13_API_BUDGET', tmv3_canaryApiBudgetRegression],
     ['B14_AUTOMATIC_CANARY', tmv3_automaticCanaryRegression],
     ['B15_OWNER_SPECIFIC_GUEST_DECISION', tmv3_preInspectionGuestSyncRegression],
-    ['B16_CALENDAR_COPY_PARITY', tmv3_preInspectionCalendarCopyParityRegression]
+    ['B16_CALENDAR_COPY_PARITY', tmv3_preInspectionCalendarCopyParityRegression],
+    ['B17_TASK_DATE_AND_POOL_COMPARISON', tmv3_taskDifferencesPrecisionRegression]
   ];
   suites.forEach(function(s) { test(s[0], 'B-REGRESSIONS', s[1]); });
 
@@ -4175,18 +4195,39 @@ function tmv3_preInspectionRunAllReadOnlyTests() {
     const source=taskRows[0]||{};
     const issue=String(row['Issue']||'').trim();
     const verification=String(row['Verification']||'').trim();
-    const date=String(row['Date']||'').trim();
-    const time=String(row['Time']||'').trim();
+    const dateCell=row['Date'];
+    const timeCell=row['Time'];
+    function sheetDay(value) {
+      if (value instanceof Date && !isNaN(value.getTime()))
+        return Utilities.formatDate(value,TMV3_TIMEZONE,'yyyy-MM-dd');
+      const text=String(value||'').trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+      const d=tmv3_parseDateTime_(text);
+      return d ? Utilities.formatDate(d,TMV3_TIMEZONE,'yyyy-MM-dd') : '';
+    }
+    function sheetClock(value) {
+      if (value instanceof Date && !isNaN(value.getTime()))
+        return Utilities.formatDate(value,TMV3_TIMEZONE,'HH:mm');
+      const text=String(value||'').trim();
+      if (/^\d{1,2}:\d{2}$/.test(text))
+        return ('0'+text.split(':')[0]).slice(-2)+':'+text.split(':')[1];
+      return '';
+    }
+    const operatorDay=sheetDay(dateCell);
+    const operatorClock=sheetClock(timeCell);
     function cacheStamp(value) {
       const d=tmv3_parseDateTime_(value);
       return d ? Utilities.formatDate(d,TMV3_TIMEZONE,'yyyy-MM-dd HH:mm') : '';
     }
     const sourceStart=cacheStamp(source['Start']);
     const sourceDue=cacheStamp(source['Due']);
-    const operatorStart=date+' '+time;
+    const operatorStart=operatorDay && operatorClock ? operatorDay+' '+operatorClock : '';
     const poolSource=String(source['Pools']||'');
-    const poolSourceNormalized=tmv3_norm_(poolSource).replace(/\s+/g,'');
-    const poolExpectedNormalized=tmv3_norm_(TMV3.VERTICALS.PreInspection.defaultPoolName||'').replace(/\s+/g,'');
+    function poolAlias(value) {
+      return tmv3_norm_(value).replace(/\bpre\s+inspection\b/g,'preinspection').replace(/\s+/g,'');
+    }
+    const poolSourceNormalized=poolAlias(poolSource);
+    const poolExpectedNormalized=poolAlias(TMV3.VERTICALS.PreInspection.defaultPoolName||'');
     const poolLabelEquivalent=!!poolSourceNormalized && poolSourceNormalized.indexOf(poolExpectedNormalized)>=0;
     const operatorFlags=!!issue && /\b(?:differs|missing|wrong|pending|review|blocked)\b/i.test(issue);
     const report={
@@ -4198,18 +4239,21 @@ function tmv3_preInspectionRunAllReadOnlyTests() {
       operatorStart:operatorStart,sourceTaskStart:sourceStart,sourceTaskDue:sourceDue,
       sourcePoolLabel:poolSource,configuredPoolLabel:TMV3.VERTICALS.PreInspection.defaultPoolName,
       sourcePoolLabelEquivalent:poolLabelEquivalent,
-      sourceTaskStartMatchesOperator:sourceStart===operatorStart,
+      sourceTaskStartMatchesOperator:!!operatorStart && sourceStart===operatorStart,
       note:'A cached pool name is display evidence only; exact Pool ID is checked from live Striven in E01.'
     };
     if(parsedId!==target.taskId || taskRows.length!==1 ||
         String(source['Customer ID'])!==String(target.customerNumber) ||
         Number(source['Location ID'])!==target.expectedLocationId) {
       report.status='FAIL';report.reason='OPERATOR_OR_SOURCE_TASK_IDENTITY_MISMATCH';
-    } else if (operatorFlags || !String(row['Last Verified']||'').trim()) {
-      report.status='FAIL';
-      report.reason=operatorFlags ? 'OPERATOR_VIEW_DISPLAYS_UNRESOLVED_FLAGS' : 'OPERATOR_LAST_VERIFIED_BLANK';
-    } else if(sourceStart!==operatorStart) {
+    } else if (operatorFlags) {
+      report.status='FAIL';report.reason='OPERATOR_VIEW_DISPLAYS_UNRESOLVED_FLAGS';
+    } else if (!operatorStart || sourceStart!==operatorStart) {
       report.status='FAIL';report.reason='SOURCE_TASK_START_DIFFERS_FROM_OPERATOR';
+    } else if (!String(row['Last Verified']||'').trim()) {
+      // Do not fake a verification timestamp. A correct cache without live
+      // acceptance is a legitimate UNVERIFIED state, not a Task mismatch.
+      report.status='UNVERIFIED';report.reason='OPERATOR_VERIFIED_TIMESTAMP_MISSING';
     }
     emit('OPERATOR_DIAGNOSTIC',Object.assign({runId:runId},report));
     return report;
@@ -4327,4 +4371,41 @@ function tmv3_preInspectionRunAllReadOnlyTests() {
     throw new Error('PI_READONLY_AUDIT_' + summary.status + '_SEE_FINAL_SUMMARY_' + runId);
   }
   return summary;
+}
+
+/**
+ * Google Apps Script — ADD as a new function in 90_Regression_Tests.gs.
+ * Source: pure fixture tests only. No external reads/writes.
+ */
+function tmv3_taskDifferencesPrecisionRegression() {
+  const cfg = {orderRequired:false,orderLabel:'Sales Order',defaultPoolId:8,
+    defaultPoolName:'Pre-Inspection Pool'};
+  const event = {vertical:'PreInspection',start:new Date('2026-11-11T13:00:00-05:00'),
+    end:new Date('2026-11-11T14:00:00-05:00')};
+  const task = {'Customer ID':63164,'Location ID':58781,'Order ID':'',
+    'Start':'2026-11-11T13:00:00-05:00','Due':'2026-11-11T14:00:00-05:00',
+    'Assignees':'Stephen Foley','Pools':'Preinspection Pool'};
+  const customer={'Customer ID':63164},location={'Location ID':58781};
+  const cases=[];
+  function check(name,condition) {cases.push({name:name,pass:condition===true});}
+  function diff(changes) {return tmv3_taskDifferences_(event,cfg,
+    Object.assign({},task,changes||{}),null,customer,location);}
+  check('JEFF_IDENTICAL_MINUTE_AND_POOL_ALIAS_NO_DIFFERENCES',diff().length===0);
+  check('DATE_WRONG_MINUTE_CAUGHT',diff({Start:'2026-11-11T13:01:00-05:00'}).indexOf('Start date/time differs')!==-1);
+  check('DUE_WRONG_MINUTE_CAUGHT',diff({Due:'2026-11-11T14:01:00-05:00'}).indexOf('Due date/time differs')!==-1);
+  check('POOL_ALIAS_NORMALIZED',diff({Pools:'Pre-Inspection Pool'}).length===0);
+  check('POOL_8_MISSING_CAUGHT',diff({Pools:'Some Other Pool'}).indexOf('Pre-Inspection Pool 8 missing')!==-1);
+  check('POOL_EMPTY_CAUGHT',diff({Pools:''}).indexOf('Pre-Inspection Pool 8 missing')!==-1);
+  check('CUSTOMER_ID_DRIFT_CAUGHT',diff({'Customer ID':111}).indexOf('Task customer differs')!==-1);
+  check('LOCATION_ID_DRIFT_CAUGHT',diff({'Location ID':111}).indexOf('Task location differs')!==-1);
+  check('SO_ATTACHED_TO_PI_REJECTED',diff({'Order ID':123}).indexOf('PreInspection task must not be attached to Sales Order')!==-1);
+  check('POOL_18_NOT_POOL_8',diff({Pools:'Pool 18'}).indexOf('Pre-Inspection Pool 8 missing')!==-1);
+  const serviceEvent={vertical:'Service',start:event.start,end:event.end,technician:'Chris'};
+  const serviceCfg={orderRequired:false,defaultPoolName:''};
+  check('SERVICE_ASSIGNMENT_RULE_PRESERVED',
+    tmv3_taskDifferences_(serviceEvent,serviceCfg,Object.assign({},task,{'Assignees':'Matt'}),
+      null,customer,location).indexOf('Technician assignment differs')!==-1);
+  const bad=cases.filter(function(x){return !x.pass;});
+  if (bad.length) throw new Error('TASK_DIFFERENCES_PRECISION_FAILED:'+JSON.stringify(bad));
+  return {status:'PASS',cases:cases.length,results:cases};
 }
