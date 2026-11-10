@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const src=fs.readFileSync('apps-script/30_PreInspection.gs','utf8');
+const start=src.indexOf('function tmv3_preInspectionOrderBeforeCreate_('),end=src.indexOf('\nfunction ',start+1);assert(start>=0&&end>start);
+let state={};const ctx={TMV3:{API_BASE:'test'},tmv3_hash_:x=>x,PropertiesService:{getScriptProperties:()=>({getProperty:()=>null})},tmv3_first_:(obj,keys)=>keys.map(k=>obj&&obj[k]).find(x=>x!==undefined),tmv3_norm_:x=>String(x||'').toLowerCase(),tmv3_fetchJson_:(url)=>{if(url.endsWith('/search'))return {Data:[{Id:123,Number:'456'}],TotalCount:1};return {Id:123,OrderNumber:'456',Customer:{Id:10},Status:{Id:state.statusId,Name:state.statusName}}}};vm.createContext(ctx);vm.runInContext(src.slice(start,end),ctx);
+const record={calendarRole:'PRIMARY_SHARED',calendarId:'shared',orderNumber:'456',eventId:'e'};const plan={expectedCustomerId:10,expectedLocationId:20};
+state={statusId:22,statusName:'Approved'};assert.throws(()=>ctx.tmv3_preInspectionOrderBeforeCreate_(record,plan),/APPROVED_ORDER_REQUIRES_INSTALLATION/);
+state={statusId:19,statusName:'Quoted'};assert.equal(ctx.tmv3_preInspectionOrderBeforeCreate_(record,plan).status,'FRESH_PREAPPROVAL_ORDER_VERIFIED');
+state={statusId:25,statusName:'In Progress'};assert.throws(()=>ctx.tmv3_preInspectionOrderBeforeCreate_(record,plan),/IN_PROGRESS_ORDER_TYPE_UNVERIFIED/);
+assert.equal(ctx.tmv3_preInspectionOrderBeforeCreate_({...record,orderNumber:''},plan).status,'OPTIONAL_ORDER_NOT_ATTACHED');
+console.log('PASS: four shared-calendar order-status guard cases');

@@ -2541,7 +2541,6 @@ function tmv3_preInspectionClassifyLikely_(record,cfg,fresh) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionOrderBeforeCreate_
 function tmv3_preInspectionOrderBeforeCreate_(record,plan) {
-  if (record && record.calendarRole==='PRIMARY_SHARED' && record.calendarId===TMV3.VERTICALS.PreInspection.primaryCalendarId) return {status:'SHARED_PREINSPECTION_CALENDAR_ORDER_STATUS_NOT_REQUIRED'};
   const key='TMV3_PI_INFERRED_'+tmv3_hash_(record.eventId);
   const rawEvidence=PropertiesService.getScriptProperties().getProperty(key);
   const evidence=rawEvidence ? JSON.parse(rawEvidence) : null;
