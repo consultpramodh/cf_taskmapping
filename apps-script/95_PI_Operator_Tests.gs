@@ -16,8 +16,7 @@
 const PI_TEST = {
   // Google Calendar event IDs on CF Preinspects (with @google.com).
   events: [
-    '5mafnqht16o2hrqv4232rofmm3@google.com', // Terry Beettam 53480
-    '0aa25j196lol5imushv6mrpmv1@google.com'  // Jakob Pizzera 62883
+    '0aa25j196lol5imushv6mrpmv1@google.com'  // Jakob Pizzera 62883 (Terry done: Task #19801)
   ],
   // Event IDs whose operator intake hold (00_Configuration) is lifted for this run only.
   liftHoldFor: [
@@ -78,7 +77,8 @@ function piTest_WRITE_Reconcile() {
       if (r.status === 'PI_STAGING_RELEASE_GATE_NO_BUSINESS_WRITES') summary.cycleSource = String(tmv3_preInspectionAutomationCycle_).slice(0, 240);
       results.push(summary);
       Logger.log('PI_TEST_RECONCILE=' + JSON.stringify(summary));
-      if (r.status !== 'COMPLETE') break; // stop on the first event that did not converge
+      // Stop on a real failure; ATTENTION with no error (e.g. links re-verify pending) moves on.
+      if (summary.error || !/^(?:COMPLETE|ATTENTION|ATTENTION_PENDING_REVIEW)$/.test(String(r.status || ''))) break;
     }
   } finally {
     TMV3_PI_CLEANED_RELEASE_APPROVED = saved.gate;
