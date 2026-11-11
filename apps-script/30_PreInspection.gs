@@ -1,6 +1,10 @@
-// MIGRATION STAGING ONLY. Source: reconstructed V3 3.12.21. NOT APPROVED FOR DEPLOYMENT.
+// Google Apps Script — PreInspection V3 guarded cleanup, staging revision 2026-11-11-r5.
+// IMPORTANT: This is ONE vertical module, not a standalone replacement for TMV3 shared utilities.
+// The original 2026-11-10-r1 standard is an external dependency and must be verified.
+// Live Striven and Calendar Task mutations, guest invites and email are OFF.
+// Do not enable until full V3 integration and specific owner/RequestedBy rules pass.
+var TMV3_PI_CLEANED_RELEASE_APPROVED = false;
 
-// Original: 20_Striven; Function: tmv3_preInspectionTaskRowArray_
 function tmv3_preInspectionTaskRowArray_(task) {
   return [
     task['Task ID'],
@@ -183,250 +187,88 @@ function tmv3_searchPreInspectionTaskIdsForCustomer_(customer) {
 // Original: 20_Striven; Function: tmv3_preInspectionTaskSourceRows_
 function tmv3_preInspectionTaskSourceRows_(options) {
   options = options || {};
-
-  const prior = tmv3_rows_(
-    TMV3.SHEETS.TASKS
-  ).filter(function(task) {
-    return Number(
-      task['Task Type ID'] || 0
-    ) === 105;
+  const prior = tmv3_rows_(TMV3.SHEETS.TASKS).filter(function(t) {
+    return Number(t['Task Type ID']) === 105;
   });
-
-  const props =
-    PropertiesService.getScriptProperties();
-  const refreshKey =
-    'TMV3_PREINSPECTION_TASK_CACHE_REFRESH_AT';
-  const lastMs = Number(
-    props.getProperty(refreshKey) || 0
-  );
-  const ttlMinutes = Math.max(
-    60,
-    Number(
-      TMV3.OPERATIONS &&
-      TMV3.OPERATIONS.preInspectionTaskCacheMinMinutes ||
-      360
-    )
-  );
-  const ageMinutes = lastMs
-    ? (
-        new Date().getTime() -
-        lastMs
-      ) / 60000
-    : Infinity;
-
-  if (
-    options.force !== true &&
-    prior.length &&
-    ageMinutes < ttlMinutes
-  ) {
-    return {
-      rows:prior.map(
-        tmv3_preInspectionTaskRowArray_
-      ),
-      reused:true,
-      targetCustomers:0,
-      searchedCustomers:0,
-      hydratedTasks:0,
-      priorTasks:prior.length,
-      ageMinutes:Math.round(ageMinutes)
-    };
+  const props = PropertiesService.getScriptProperties();
+  const key = 'TMV3_PREINSPECTION_TASK_CACHE_REFRESH_AT';
+  const lastMs = Number(props.getProperty(key) || 0);
+  const ttl = Math.max(60, Number((TMV3.OPERATIONS || {}).preInspectionTaskCacheMinMinutes || 360));
+  const age = lastMs ? (Date.now() - lastMs) / 60000 : Infinity;
+  const summary = {reused:true,targetCustomers:0,searchedCustomers:0,
+    hydratedTasks:0,priorTasks:prior.length,
+    ageMinutes:isFinite(age) ? Math.round(age) : null};
+  if (options.force !== true && prior.length && age < ttl) {
+    return Object.assign({rows:prior.map(tmv3_preInspectionTaskRowArray_)},summary);
   }
-
-  const targets =
-    tmv3_preInspectionTaskRefreshTargets_();
-
-  if (!targets.length) {
-    return {
-      rows:prior.map(
-        tmv3_preInspectionTaskRowArray_
-      ),
-      reused:true,
-      targetCustomers:0,
-      searchedCustomers:0,
-      hydratedTasks:0,
-      priorTasks:prior.length,
-      ageMinutes:isFinite(ageMinutes)
-        ? Math.round(ageMinutes)
-        : null
-    };
-  }
-
-  const customerById = {};
-  const wantedTaskIds = {};
-
+  const targets = tmv3_preInspectionTaskRefreshTargets_();
+  if (!targets.length) return Object.assign({rows:prior.map(tmv3_preInspectionTaskRowArray_)},summary);
+  const customers = {}, wanted = {};
   targets.forEach(function(target) {
-    const customer = target.customer || {};
-    const customerId = tmv3_clean_(
-      customer['Customer ID']
-    );
-
-    if (customerId) {
-      customerById[customerId] = customer;
-    }
-
-    if (target.existingTaskId) {
-      wantedTaskIds[
-        target.existingTaskId
-      ] = true;
-    }
+    const id = String(tmv3_clean_(target.customer && target.customer['Customer ID']));
+    if (id) customers[id] = target.customer;
+    if (target.existingTaskId) wanted[String(target.existingTaskId)] = true;
   });
-
-  const customerIds =
-    Object.keys(customerById);
-
+  const customerIds = Object.keys(customers);
   customerIds.forEach(function(customerId) {
-    tmv3_searchPreInspectionTaskIdsForCustomer_(
-      customerById[customerId]
-    ).forEach(function(taskId) {
-      wantedTaskIds[taskId] = true;
+    tmv3_searchPreInspectionTaskIdsForCustomer_(customers[customerId]).forEach(function(taskId) {
+      wanted[String(taskId)] = true;
     });
   });
-
-  const taskIds =
-    Object.keys(wantedTaskIds);
-  const maxHydrate = Math.max(
-    1,
-    Number(
-      TMV3.OPERATIONS &&
-      TMV3.OPERATIONS.preInspectionTaskHydrationMaxTasks ||
-      60
-    )
-  );
-
-  if (taskIds.length > maxHydrate) {
-    throw new Error(
-      'TMV3_PREINSPECTION_TASK_HYDRATION_CAP: ' +
-      taskIds.length +
-      ' Tasks exceed the configured cap of ' +
-      maxHydrate +
-      '.'
-    );
-  }
-
-  const hydrated = taskIds
-    .map(function(taskId) {
-      return tmv3_getTaskById_(taskId);
-    })
-    .filter(function(task) {
-      const customerId = tmv3_clean_(
-        task &&
-        task['Customer ID']
-      );
-
-      return (
-        task &&
-        Number(
-          task['Task Type ID'] || 0
-        ) === 105 &&
-        !!customerById[customerId]
-      );
-    });
-
-  const seen = {};
-  hydrated.forEach(function(task) {
-    const id = tmv3_clean_(
-      task['Task ID']
-    );
-    if (!id) {
-      throw new Error(
-        'TMV3_PREINSPECTION_TASK_HYDRATION_INVALID: hydrated Task is missing Task ID.'
-      );
-    }
-    if (seen[id]) {
-      throw new Error(
-        'TMV3_PREINSPECTION_TASK_HYDRATION_DUPLICATE: Task ' +
-        id +
-        ' was hydrated more than once.'
-      );
-    }
-    seen[id] = true;
+  const ids = Object.keys(wanted);
+  const configuredCap=Number((TMV3.OPERATIONS || {}).preInspectionTaskHydrationMaxTasks || 60);
+  const cap=Number.isSafeInteger(configuredCap)&&configuredCap>0?Math.min(100,configuredCap):60;
+  if (ids.length > cap) throw new Error('PI_CACHE_HYDRATION_CAP_NO_REPLACE');
+  const byId = {};
+  // Retain prior tasks outside the targeted customer set. This refresh is not
+  // an all-customer snapshot and may never erase unrelated cached task history.
+  prior.forEach(function(task) {
+    const id = String(tmv3_clean_(task['Task ID']));
+    if (!id || byId[id]) throw new Error('PI_PRIOR_CACHE_DUPLICATE_OR_BLANK_TASK_ID');
+    byId[id] = task;
   });
-
-  props.setProperty(
-    refreshKey,
-    String(new Date().getTime())
-  );
-
-  return {
-    rows:hydrated.map(
-      tmv3_preInspectionTaskRowArray_
-    ),
-    reused:false,
-    targetCustomers:customerIds.length,
-    searchedCustomers:customerIds.length,
-    hydratedTasks:hydrated.length,
-    priorTasks:prior.length,
-    ageMinutes:isFinite(ageMinutes)
-      ? Math.round(ageMinutes)
-      : null
-  };
+  ids.forEach(function(id) {
+    const task = tmv3_getTaskById_(id);
+    const owner = String(tmv3_clean_(task && task['Customer ID']));
+    if (!task || String(tmv3_clean_(task['Task ID'])) !== id ||
+        Number(task['Task Type ID']) !== 105 || !customers[owner]) {
+      throw new Error('PI_CACHE_TASK_IDENTITY_CONFLICT_NO_REPLACE:' + id);
+    }
+    byId[id] = task;
+  });
+  // Commit freshness only after the entire bounded retrieval succeeds.
+  props.setProperty(key,String(Date.now()));
+  return {rows:Object.keys(byId).sort(function(a,b){return Number(a)-Number(b);})
+      .map(function(id){return tmv3_preInspectionTaskRowArray_(byId[id]);}),
+    reused:false,targetCustomers:customerIds.length,
+    searchedCustomers:customerIds.length,hydratedTasks:ids.length,
+    priorTasks:prior.length,ageMinutes:isFinite(age)?Math.round(age):null};
 }
 
-// Original: 20_Striven; Function: tmv3_searchPreInspectionTasks_
 function tmv3_searchPreInspectionTasks_(customer) {
-  const customerId = Number(tmv3_clean_(customer && customer['Customer ID']) || 0);
-  if (!customerId) throw new Error('PreInspection task search requires Customer ID.');
-
-  const customerPayload = { Id: customerId };
-  const customerNumber = tmv3_clean_(customer['Customer Number']);
-  const customerName = tmv3_clean_(customer['Name']);
-  if (customerNumber) customerPayload.Number = customerNumber;
-  if (customerName) customerPayload.Name = customerName;
-
-  const all = [];
-  let previousSignature = '';
-
-  for (let pageIndex = 0; pageIndex < 3; pageIndex++) {
-    const payload = {
-      Customer: customerPayload,
-      Type: [105],
-      PageIndex: pageIndex,
-      PageSize: 100
-    };
-
-    const json = tmv3_fetchJson_(
-      TMV3.API_BASE + '/v2/tasks/search',
-      {
-        method: 'post',
-        contentType: 'application/json',
-        payload: JSON.stringify(payload)
-      }
-    );
-
-    const rows = tmv3_extractTaskSearchRows_(json);
-    const signature = rows.slice(0, 5).map(function(row) {
-      return tmv3_clean_(tmv3_first_(row, ['id','Id','taskId','TaskId']));
-    }).join('|');
-
-    if (pageIndex > 0 && signature && signature === previousSignature) {
-      throw new Error('PreInspection task search pagination repeated a page.');
-    }
-
-    previousSignature = signature;
-    Array.prototype.push.apply(all, rows);
-
-    if (!rows.length || rows.length < 100) break;
-  }
-
-  const ids = tmv3_unique_(all.map(function(row) {
-    return tmv3_first_(row, ['id','Id','taskId','TaskId']);
-  })).slice(0, 11);
-
-  if (ids.length > 10) {
-    throw new Error('More than 10 PreInspection task candidates were returned for Customer + Type 105.');
-  }
-
+  // One exhaustive search path: never silently discard the 11th task or assume
+  // a capped search is complete. The ID search throws on ambiguous pagination.
+  const customerId = String(tmv3_clean_(customer && customer['Customer ID']));
+  if (!/^[1-9]\d*$/.test(customerId)) throw new Error('PI_CUSTOMER_ID_REQUIRED');
+  const ids = tmv3_searchPreInspectionTaskIdsForCustomer_(customer);
+  const configuredCap=Number((TMV3.OPERATIONS || {}).preInspectionTaskHydrationMaxTasks || 60);
+  const cap=Number.isSafeInteger(configuredCap) && configuredCap>0 ? Math.min(100,configuredCap) : 60;
+  if (ids.length > cap) throw new Error('PI_HISTORY_HYDRATION_CAP_REVIEW_NO_CREATE');
+  const seen = {};
   return ids.map(function(id) {
-    return tmv3_getTaskById_(id);
-  }).filter(function(task) {
-    return (
-      Number(task['Task Type ID'] || 0) === 105 &&
-      String(task['Customer ID'] || '') === String(customerId)
-    );
+    const key = String(id);
+    if (seen[key]) throw new Error('PI_HISTORY_DUPLICATE_TASK_ID');
+    seen[key] = true;
+    const task = tmv3_getTaskById_(id);
+    if (!task || String(task['Task ID']) !== key ||
+        Number(task['Task Type ID']) !== 105 ||
+        String(task['Customer ID']) !== customerId) {
+      throw new Error('PI_HISTORY_TASK_OWNERSHIP_CONFLICT_NO_CREATE:' + key);
+    }
+    return task;
   });
 }
 
-// Original: 30_Calendar; Function: tmv3_preInspectionStep1SourceAllowed_
 function tmv3_preInspectionStep1SourceAllowed_(cfg, calCfg, creator) {
   if (calCfg.role === 'PRIMARY_SHARED') return true;
 
@@ -609,79 +451,52 @@ function tmv3_preInspectionHtmlLink_(link) {
 }
 
 // Original: 35_CalendarLinks; Function: tmv3_preInspectionEnsureLegacyTitle_
-function tmv3_preInspectionEnsureLegacyTitle_(description, legacyTitle) {
-  const raw = String(description || '');
-  const legacy = tmv3_clean_(legacyTitle);
-  if (!legacy) return raw;
-  const readable = tmv3_calendarReadableDescription_(raw).trim();
-  if (readable === legacy) return raw;
-  const html = /<[a-z][^>]*>/i.test(raw);
-  const separator = html ? '<br><br>' : '\n\n';
-  // Normalize only the separator after the preserved title. Authored notes
-  // and their inline markup remain intact.
-  if (readable.indexOf(legacy) === 0) {
-    const escaped = tmv3_calendarHtmlEscape_(legacy);
-    const token = raw.indexOf(escaped) >= 0 ? escaped : legacy;
-    const ix = raw.indexOf(token);
-    if (ix >= 0) {
-      const tail = raw.slice(ix+token.length).replace(/^(?:\s|<br\s*\/?>)+/gi, '');
-      return raw.slice(0,ix) + token + separator + tail;
-    }
-  }
-  return html
-    ? tmv3_calendarHtmlEscape_(legacy) + '<br><br>' + raw
-    : legacy + (raw ? '\n\n' + raw : '');
+function tmv3_preInspectionEnsureLegacyTitle_(description,legacyTitle) {
+  const authored=String(description||'');
+  const title=String(legacyTitle||'').trim();
+  if(!title)return authored;
+  const readable=tmv3_calendarReadableDescription_(authored);
+  if(String(readable||'').trim().indexOf(title)===0)return authored;
+  const html=/<[a-z][^>]*>/i.test(authored);
+  return html ? tmv3_calendarHtmlEscape_(title)+'<br>*<br>'+authored :
+    title+(authored?'\n*\n'+authored:'');
 }
 
-// Original: 35_CalendarLinks; Function: tmv3_preInspectionAuthoredMarkup_
 function tmv3_preInspectionAuthoredMarkup_(description) {
-  let text = tmv3_stripV3ManagedBlock_(String(description || ''));
-  text = text.replace(
-    /<!--\s*PREINSPECT_STRIVEN_TASK_LINK_START\s*-->[\s\S]*?<!--\s*PREINSPECT_STRIVEN_TASK_LINK_END\s*-->/gi,
-    ''
-  );
-  const start = tmv3_managedCalendarBlockStart_(text);
-  if (start >= 0) text = text.slice(0, start);
-  // Remove only the empty wrapper/separator belonging to the managed footer.
-  text = text.replace(/(?:<p[^>]*>\s*|<br\s*\/?>\s*|\s)+$/gi, '');
-  if (!/<[a-z][^>]*>/i.test(text)) {
-    text = text.replace(/^\s*#{1,6}\s+/gm, '');
-    text = text.replace(/\r\n?/g, '\n')
-      .replace(/\n/, '<br>')
-      .replace(/\n\s*\n+/g, '<br>')
-      .replace(/[ \t]*\n[ \t]*/g, ' ');
-    return text.split('<br>').map(tmv3_calendarHtmlEscape_).join('<br>');
+  // Strip ONLY the known automation-managed blocks. Do not rewrite headings,
+  // author-created blank lines, notes, paragraphs, photos or HTML markup.
+  let raw=tmv3_stripV3ManagedBlock_(String(description||''));
+  raw=raw.replace(/<!--\s*PREINSPECT_STRIVEN_TASK_LINK_START\s*-->[\s\S]*?<!--\s*PREINSPECT_STRIVEN_TASK_LINK_END\s*-->/gi,'');
+  const offset=tmv3_managedCalendarBlockStart_(raw);
+  if(offset>=0){
+    raw=raw.slice(0,offset);
+    // Remove only the separator immediately before our managed footer.
+    raw=raw.replace(/(?:<br\s*\/?>|\r?\n)\s*$/i,'');
   }
-  // Imported Markdown headings and paragraph wrappers must not turn the
-  // preserved sales-rep title into oversized text or artificial vertical gaps.
-  // Real inline formatting and lists stay intact. API/export line wrapping
-  // inside HTML text is whitespace, not an authored hard line break.
-  return text
-    .replace(/<\/(?:p|h[1-6])\s*>/gi, '<br>')
-    .replace(/<(?:p|h[1-6])(?:\s[^>]*)?>/gi, '')
-    .replace(/[\r\n]+[ \t]*/g, ' ')
-    .replace(/(?:<br\s*\/?>\s*){2,}/gi, '<br>')
-    .replace(/^\s+|(?:<br\s*\/?>\s*|\s)+$/gi, '');
+  if(/<[a-z][^>]*>/i.test(raw))return raw.replace(/\s+$/,'');
+  // Calendar HTML hyperlinks require markup; escape only plain-text contents
+  // and turn each existing newline into a single <br>, never collapse paragraphs.
+  return tmv3_calendarHtmlEscape_(raw.replace(/\r\n?/g,'\n').replace(/\s+$/,''))
+    .replace(/\n/g,'<br>');
 }
 
-// Original: 35_CalendarLinks; Function: tmv3_preInspectionClickableManagedDescription_
-function tmv3_preInspectionClickableManagedDescription_(existingDescription, plan) {
-  const before = String(existingDescription || '');
-  const links = (plan && plan.links) || [];
-  const authored = tmv3_preInspectionAuthoredMarkup_(before);
-  const managed = tmv3_calendarHtmlEscape_(TMV3_FINAL_LINK_HEADING) +
-    (links.length ? '<br>' + links.map(tmv3_preInspectionHtmlLink_).join('<br>') : '');
-  const description = authored + (authored ? '<br><br>' : '') + managed;
-  return {
-    description:description,
-    status:description === before
-      ? 'PRESERVED_EXISTING_CLICKABLE_LINK_BLOCK'
-      : 'RESTORED_CLICKABLE_HYPERLINK_BLOCK',
-    changed:description !== before
-  };
+function tmv3_preInspectionClickableManagedDescription_(existingDescription,plan) {
+  const before=String(existingDescription||'');
+  const links=(plan&&plan.links)||[];
+  const seen={};
+  links.forEach(function(link){
+    if(!link||!link.key||!/^https:\/\//i.test(String(link.url||''))||seen[link.key])
+      throw new Error('PI_MANAGED_LINK_INVALID_OR_DUPLICATE');
+    seen[link.key]=true;
+  });
+  const authored=tmv3_preInspectionAuthoredMarkup_(before);
+  const header=tmv3_calendarHtmlEscape_(TMV3_FINAL_LINK_HEADING);
+  const footer=header+(links.length?'<br>'+links.map(tmv3_preInspectionHtmlLink_).join('<br>'):'');
+  const out=authored+(authored?'<br>':'')+footer;
+  tmv3_assertPreInspectionLinkDescription_(out,plan);
+  return {description:out,status:out===before?'LINKS_ALREADY_CANONICAL':'LINKS_REQUIRE_UPDATE',changed:out!==before};
 }
 
-// Original: 35_CalendarLinks; Function: tmv3_preInspectionTitleVariants_
 function tmv3_preInspectionTitleVariants_(plan) {
   plan = plan || {};
   const number = tmv3_clean_(plan.customerNumber);
@@ -1116,14 +931,14 @@ function tmv3_step4ResolvePreInspectionIdentity_(record, refs, anchor) {
     warnings.push('Location will need to be created on the verified Customer before any Task write.');
   }
 
+  // Customer Contact is optional identity evidence, NOT the Striven Task
+  // Requested By. Requested By is the verified Calendar-owner EMPLOYEE.
+  // Missing/ambiguous Contact does not block a pre-inspection solely for that.
   const contactResult = tmv3_step4ResolveContact_(record, customer, '');
-
-  // PreInspection never invents a Contact. Contact ambiguity is retained as a
-  // warning because Requested By comes from the Calendar organizer, not Contact.
   if (contactResult.status === 'REVIEW') {
-    warnings.push(contactResult.reason || 'Contact requires review.');
+    warnings.push(contactResult.reason || 'Customer Contact requires review; not used as Requested By.');
   } else if (contactResult.status === 'NO_MATCH') {
-    warnings.push('No deterministic Contact match; this does not block PreInspection.');
+    warnings.push('No unique Contact match. Requested By uses the verified Calendar owner employee, not Contact.');
   }
 
   return tmv3_step4Decision_(
@@ -1141,215 +956,79 @@ function tmv3_step4ResolvePreInspectionIdentity_(record, refs, anchor) {
 
 // Original: 40_Engine; Function: tmv3_preInspectionTaskDecision_
 function tmv3_preInspectionTaskDecision_(eventRecord, customer, location, cachedCandidates) {
-  const customerId = tmv3_clean_(customer && customer['Customer ID']);
-  const locationId = tmv3_clean_(location && location['Location ID']);
-
-  let candidates = [];
-
-  if (Array.isArray(cachedCandidates)) {
-    candidates = cachedCandidates.slice();
-
-    if (eventRecord.existingTaskId) {
-      const linkedId = tmv3_clean_(eventRecord.existingTaskId);
-      const linked = candidates.filter(function(task) {
-        return tmv3_clean_(task['Task ID']) === linkedId;
-      });
-
-      // Prefer an exact cached Calendar Task link when present. If the link is
-      // stale/missing from cache, continue with the verified Customer's cached
-      // Type-105 candidates rather than spending a live Task GET.
-      if (linked.length === 1) candidates = linked;
-    }
-  } else if (eventRecord.existingTaskId) {
-    const linked = tmv3_getTaskById_(eventRecord.existingTaskId);
-    candidates = linked ? [linked] : [];
-  } else {
-    candidates = tmv3_searchPreInspectionTasks_(customer);
+  // Customer ID alone is NEVER evidence that an OPEN task belongs to this
+  // appointment. Strong association requires an explicit linked task or
+  // corroborated date, job site and phone/name.
+  const cid = String(tmv3_clean_(customer && customer['Customer ID']));
+  const lid = String(tmv3_clean_(location && location['Location ID']));
+  const linkedId = String(tmv3_clean_(eventRecord && eventRecord.existingTaskId));
+  if (!/^[1-9]\d*$/.test(cid)) return {status:'REVIEW',errorCode:'PI_CUSTOMER_UNVERIFIED'};
+  let candidates;
+  if (Array.isArray(cachedCandidates)) candidates=cachedCandidates.slice();
+  else if (linkedId) candidates=[tmv3_getTaskById_(linkedId)];
+  else candidates=tmv3_searchPreInspectionTasks_(customer);
+  if (linkedId && !candidates.some(function(t){return String(t && t['Task ID'])===linkedId;})) {
+    return {status:'REVIEW',errorCode:'PI_EXPLICIT_TASK_LINK_NOT_RESOLVED',
+      reason:'Linked Task is absent; no fallback to another Task and no create.'};
   }
-
-  candidates = (candidates || []).filter(function(task) {
-    return (
-      Number(task['Task Type ID'] || 0) === 105 &&
-      tmv3_clean_(task['Customer ID']) === customerId
+  const all=(candidates||[]).filter(function(t){
+    return t && Number(t['Task Type ID'])===105 &&
+      String(t['Customer ID'])===cid;
+  });
+  if (linkedId && !all.some(function(t){return String(t['Task ID'])===linkedId;})) {
+    return {status:'REVIEW',errorCode:'PI_LINKED_TASK_OWNERSHIP_OR_TYPE_CONFLICT'};
+  }
+  const evaluated=all.map(function(task){
+    const taskId=String(task['Task ID']);
+    const sameStart=!!task.Start && tmv3_sameMinute_(eventRecord.start,task.Start);
+    const sameDue=!!task.Due && tmv3_sameMinute_(eventRecord.end,task.Due);
+    const sameDay=!!task.Start && tmv3_sameLocalDay_(eventRecord.start,task.Start);
+    const sameLocation=!!lid && String(task['Location ID'])===lid;
+    const taskLocation=String(tmv3_clean_(task['Location ID']));
+    const phone=tmv3_phone10_(eventRecord.phone);
+    const titlePhoneMatch=!!phone && tmv3_allPhones_(String(task.Name||'')).indexOf(phone)>=0;
+    const name=tmv3_norm_(customer.Name);
+    const titleNameMatch=!!name && tmv3_norm_(task.Name).indexOf(name)>=0;
+    const explicit=!!linkedId && taskId===linkedId;
+    const locationConflict=!!lid && !!taskLocation && taskLocation!==lid;
+    const corroborated=titlePhoneMatch||titleNameMatch;
+    const strong=(!locationConflict) && (
+      (explicit && (sameDay || (sameLocation && corroborated))) ||
+      (sameStart && sameLocation && corroborated) ||
+      (sameDay && sameDue && sameLocation && corroborated)
     );
+    return {task:task,open:tmv3_taskIsOpen_(task.Status),
+      completed:tmv3_taskIsCompleted_(task.Status),
+      sameStart:sameStart,sameDue:sameDue,sameDay:sameDay,
+      sameLocation:sameLocation,titlePhoneMatch:titlePhoneMatch,
+      titleNameMatch:titleNameMatch,identityCorroborated:corroborated,
+      exactCalendarTaskLink:explicit,strongMatch:strong,
+      locationConflict:locationConflict};
   });
-
-  const evaluated = candidates.map(function(task) {
-    const taskStart = tmv3_clean_(task['Start']);
-    const taskDue = tmv3_clean_(task['Due']);
-    const sameStart = tmv3_sameMinute_(eventRecord.start, taskStart);
-    const sameDue = tmv3_sameMinute_(eventRecord.end, taskDue);
-    const sameDay = tmv3_sameLocalDay_(eventRecord.start, taskStart);
-    const sameLocation =
-      !!locationId &&
-      tmv3_clean_(task['Location ID']) === locationId;
-
-    const taskTitle = tmv3_clean_(task['Name']);
-    const titlePhones = tmv3_allPhones_(taskTitle);
-    const titlePhoneMatch =
-      !!eventRecord.phone &&
-      titlePhones.indexOf(tmv3_phone10_(eventRecord.phone)) !== -1;
-
-    const customerName = tmv3_norm_(customer && customer['Name']);
-    const titleNameMatch =
-      !!customerName &&
-      tmv3_norm_(taskTitle).indexOf(customerName) !== -1;
-
-    const identityCorroborated = titlePhoneMatch || titleNameMatch;
-    const exactCalendarTaskLink =
-      !!eventRecord.existingTaskId &&
-      tmv3_clean_(eventRecord.existingTaskId) ===
-        tmv3_clean_(task['Task ID']);
-
-    const strongMatch =
-      exactCalendarTaskLink ||
-      sameStart ||
-      (sameDay && sameLocation && identityCorroborated);
-
-    return {
-      task: task,
-      open: tmv3_taskIsOpen_(task['Status']),
-      sameStart: sameStart,
-      sameDue: sameDue,
-      sameDay: sameDay,
-      sameLocation: sameLocation,
-      titlePhoneMatch: titlePhoneMatch,
-      titleNameMatch: titleNameMatch,
-      identityCorroborated: identityCorroborated,
-      exactCalendarTaskLink: exactCalendarTaskLink,
-      strongMatch: strongMatch,
-      hasStart: !!taskStart,
-      score:
-        (sameStart ? 100 : 0) +
-        (sameDue ? 30 : 0) +
-        (sameLocation ? 50 : 0) +
-        (sameDay ? 20 : 0) +
-        (titlePhoneMatch ? 80 : 0) +
-        (titleNameMatch ? 40 : 0)
-    };
-  });
-
-  const open = evaluated.filter(function(c) { return c.open; });
-  const historyTasks = evaluated
-    .filter(function(c) { return !c.open && tmv3_taskIsCompleted_(c.task['Status']); })
-    .map(function(c) { return c.task; });
-  const nonOpenActive = evaluated.filter(function(c) {
-    return (
-      !c.open &&
-      !tmv3_taskIsCompleted_(c.task['Status'])
-    );
-  });
-
-  if (!open.length && nonOpenActive.length) {
-    return {
-      status: 'REVIEW',
-      task: null,
-      historyTasks: historyTasks,
-      reason: 'Applicable PreInspection Task exists in a non-open active status and must not be duplicated.',
-      errorCode: 'NON_OPEN_ACTIVE_PREINSPECTION_TASK'
-    };
+  const history=evaluated.filter(function(x){return x.completed;}).map(function(x){return x.task;});
+  const active=evaluated.filter(function(x){return !x.open && !x.completed;});
+  const open=evaluated.filter(function(x){return x.open;});
+  if (active.length) return {status:'REVIEW',historyTasks:history,
+    errorCode:'PI_NONOPEN_ACTIVE_TASK_REQUIRES_REVIEW',
+    reason:'A non-completed, non-open Task exists; lifecycle must be inspected.'};
+  if (linkedId && !open.some(function(x){return x.exactCalendarTaskLink;})) {
+    return {status:'REVIEW',historyTasks:history,
+      errorCode:'PI_EXPLICIT_TASK_LINK_NOT_OPEN_REVIEW',
+      reason:'Calendar-linked Task is not open; verify fulfilled history before any create.'};
   }
-
-  // Step 5 resolves only the current OPEN task. Historical tasks are carried
-  // forward so Step 6 can decide CREATE vs RECREATE vs FULFILLED safely.
-  if (!open.length) {
-    return {
-      status: 'CLEAR',
-      task: null,
-      historyTasks: historyTasks,
-      reason: 'No OPEN PreInspection task remains for this appointment.'
-    };
-  }
-
-  open.sort(function(a, b) { return b.score - a.score; });
-
-  const strong = open.filter(function(c) { return c.strongMatch; });
-
-  if (strong.length === 1) {
-    return {
-      status: 'MATCHED',
-      task: strong[0].task,
-      reason: 'One OPEN PreInspection task strongly matches this appointment.',
-      evidence: tmv3_preInspectionCandidateEvidence_(strong[0])
-    };
-  }
-
-  if (strong.length > 1) {
-    return {
-      status: 'REVIEW',
-      reason: 'Multiple OPEN PreInspection tasks strongly match this appointment.',
-      errorCode: 'MULTIPLE_STRONG_PREINSPECTION_TASKS'
-    };
-  }
-
-  // Business rule: if this Customer already has exactly one OPEN
-  // PreInspection Task (Type 105), reuse it and patch it to the current
-  // Calendar appointment rather than creating another Task. The Customer
-  // match is already exact because candidates are filtered by Customer ID
-  // above. Multiple OPEN PreInspection Tasks for the same Customer remain
-  // review-only because choosing between them would be ambiguous.
-  if (open.length === 1) {
-    return {
-      status: 'MATCHED',
-      task: open[0].task,
-      reason: 'Exactly one OPEN PreInspection Task exists for this Customer. Reuse it and patch the appointment details.',
-      evidence: tmv3_preInspectionCandidateEvidence_(open[0]).concat([
-        'SINGLE_OPEN_PREINSPECTION_FOR_CUSTOMER_REUSED'
-      ])
-    };
-  }
-
-  const sameDay = open.filter(function(c) { return c.sameDay; });
-  if (sameDay.length) {
-    return {
-      status: 'REVIEW',
-      reason: 'Multiple OPEN PreInspection Tasks exist for this Customer and at least one is on the same day. Select the correct Task before writing.',
-      errorCode: 'MULTIPLE_OPEN_PREINSPECTION_TASKS_SAME_DAY'
-    };
-  }
-
-  const sameLocation = open.filter(function(c) { return c.sameLocation; });
-  if (sameLocation.length) {
-    return {
-      status: 'REVIEW',
-      reason: 'Multiple OPEN PreInspection Tasks exist for this Customer and at least one uses this Location. Select the correct Task before writing.',
-      errorCode: 'MULTIPLE_OPEN_PREINSPECTION_TASKS_SAME_LOCATION'
-    };
-  }
-
-  const unresolved = open.filter(function(c) { return !c.hasStart; });
-  const reusableUnscheduled = unresolved.filter(function(c) {
-    const noConflictingLocation =
-      !tmv3_clean_(c.task['Location ID']) || c.sameLocation;
-    return c.identityCorroborated && noConflictingLocation;
-  });
-
-  if (open.length === 1 && reusableUnscheduled.length === 1) {
-    return {
-      status: 'MATCHED',
-      task: reusableUnscheduled[0].task,
-      reason: 'Exactly one unscheduled OPEN PreInspection task is identity-corroborated and has no conflicting Location.',
-      evidence: tmv3_preInspectionCandidateEvidence_(reusableUnscheduled[0])
-    };
-  }
-
-  if (unresolved.length) {
-    return {
-      status: 'REVIEW',
-      reason: 'OPEN PreInspection candidate(s) have no usable start date and cannot be safely reused or ruled out.',
-      errorCode: 'UNRESOLVED_PREINSPECTION_TASK'
-    };
-  }
-
-  return {
-    status: 'CLEAR',
-    task: null,
-    historyTasks: historyTasks,
-    reason: 'No OPEN existing PreInspection task match was found for this appointment.'
-  };
+  if (!open.length) return {status:'CLEAR',task:null,historyTasks:history,
+    reason:'No open customer Task; completed Task history remains subject to fresh verification.'};
+  if (open.length>1) return {status:'REVIEW',historyTasks:history,
+    errorCode:'PI_MULTIPLE_OPEN_TASKS_NO_AUTOMATIC_SELECTION',
+    reason:'Multiple open Task candidates require event-specific reconciliation.'};
+  if (!open[0].strongMatch) return {status:'REVIEW',historyTasks:history,
+    errorCode:'PI_OPEN_TASK_APPOINTMENT_NOT_PROVEN',
+    reason:'A single open Task for the customer is not enough to overwrite its relationship.'};
+  return {status:'MATCHED',task:open[0].task,historyTasks:history,
+    reason:'Exactly one customer-owned open Task is corroborated to this event.',
+    evidence:tmv3_preInspectionCandidateEvidence_(open[0])};
 }
 
-// Original: 40_Engine; Function: tmv3_preInspectionCandidateEvidence_
 function tmv3_preInspectionCandidateEvidence_(candidate) {
   const parts = [];
   if (candidate.exactCalendarTaskLink) parts.push('CALENDAR_TASK_LINK');
@@ -1364,334 +1043,114 @@ function tmv3_preInspectionCandidateEvidence_(candidate) {
 
 // Original: 42_Step5_Task_Resolution; Function: tmv3_step5ResolvePreInspection_
 function tmv3_step5ResolvePreInspection_(record, refs) {
-  const identity = record.step4 || {};
-  const customer = identity.customer;
-  const location = identity.location;
-  const customerId = tmv3_clean_(
-    customer && customer['Customer ID']
-  );
-
-  const cachedCandidates = (
-    refs.tasksByCustomer[customerId] || []
-  ).filter(function(task) {
-    return Number(task['Task Type ID'] || 0) === 105;
+  const identity=record.step4||{};
+  const cid=String(tmv3_clean_(identity.customer && identity.customer['Customer ID']));
+  const cached=((refs.tasksByCustomer||{})[cid]||[]).filter(function(task){
+    return Number(task['Task Type ID'])===105;
   });
-
-  const warnings = [];
-  const evidence = ['PREINSPECTION_TASKS_FROM_SHARED_CACHE'];
-
-  const linkedTaskMissingFromCache =
-    !!record.existingTaskId &&
-    !refs.taskById[tmv3_clean_(record.existingTaskId)];
-
-  if (linkedTaskMissingFromCache) {
-    warnings.push(
-      'Calendar carries Task ' +
-      tmv3_clean_(record.existingTaskId) +
-      ', but it is not present in the current shared Task cache. Stage 5 did not spend a live Task GET.'
-    );
-    evidence.push(
-      'CALENDAR_TASK_LINK_NOT_IN_CACHE_DEFER_LIVE_READ'
-    );
-
-    if (!cachedCandidates.length) {
-      return tmv3_step5Decision_(
-        'REVIEW',
-        'PREINSPECTION_CALENDAR_TASK_NOT_IN_CACHE_NO_SAFE_FALLBACK',
-        'Calendar carries a PreInspection Task link that is absent from the current shared Task cache, and no Customer-owned cached Type-105 Task can safely replace it.',
-        [],
-        0,
-        evidence,
-        warnings
-      );
-    }
+  const linked=String(tmv3_clean_(record.existingTaskId));
+  const evidence=['SHARED_CACHE_ONLY_NOT_FULL_FRESH_HISTORY'];
+  if (linked && !(refs.taskById||{})[linked]) {
+    return tmv3_step5Decision_('REVIEW','PI_LINKED_TASK_NOT_CACHED_NO_FALLBACK',
+      'Calendar carries a Task ID missing from the cache; hydrate exact ID before proceeding.',
+      [],0,evidence,['Task ID not certified from fresh Striven.']);
   }
-
   try {
-    const decision = tmv3_preInspectionTaskDecision_(
-      record,
-      customer,
-      location,
-      cachedCandidates
-    );
-
-    if (decision.status === 'MATCHED' && decision.task) {
-      return tmv3_step5Decision_(
-        'MATCHED',
-        'PREINSPECTION_TASK_MATCHED',
-        decision.reason,
-        [decision.task],
-        (decision.historyTasks || []).length,
-        evidence.concat(decision.evidence || []),
-        warnings,
-        decision.historyTasks || []
-      );
-    }
-
-    if (decision.status === 'CLEAR') {
-      return tmv3_step5Decision_(
-        'NO_TASK',
-        'PREINSPECTION_NO_OPEN_TASK',
-        decision.reason,
-        [],
-        (decision.historyTasks || []).length,
-        evidence,
-        warnings,
-        decision.historyTasks || []
-      );
-    }
-
-    return tmv3_step5Decision_(
-      'REVIEW',
-      decision.errorCode || 'PREINSPECTION_TASK_REVIEW',
-      decision.reason || 'PreInspection Task candidates require review.',
-      [],
-      0,
-      evidence.concat(decision.evidence || []),
-      warnings
-    );
-  } catch (err) {
-    return tmv3_step5Decision_(
-      'REVIEW',
-      'PREINSPECTION_TASK_CACHE_RESOLUTION_ERROR',
-      String(err && err.message || err),
-      [],
-      0,
-      evidence,
-      warnings
-    );
+    const d=tmv3_preInspectionTaskDecision_(record,identity.customer,identity.location,cached);
+    if (d.status==='MATCHED')return tmv3_step5Decision_('MATCHED','PREINSPECTION_TASK_MATCHED',
+      d.reason,[d.task],(d.historyTasks||[]).length,evidence.concat(d.evidence||[]),[],d.historyTasks||[]);
+    if (d.status==='CLEAR')return tmv3_step5Decision_('NO_TASK','PREINSPECTION_NO_OPEN_TASK',
+      d.reason,[],(d.historyTasks||[]).length,evidence,[],d.historyTasks||[]);
+    return tmv3_step5Decision_('REVIEW',d.errorCode||'PI_TASK_MATCH_UNCERTAIN',
+      d.reason||'Task relationship requires review.',[],(d.historyTasks||[]).length,evidence,[],d.historyTasks||[]);
+  }catch(error){
+    return tmv3_step5Decision_('REVIEW','PI_TASK_RESOLUTION_FAILED',
+      String(error && error.message || error),[],0,evidence,[]);
   }
 }
 
-// Original: 42_Step5_Task_Resolution; Function: tmv3_step5NormalizePreInspectionTaskTimesAcrossRecords_
 function tmv3_step5NormalizePreInspectionTaskTimesAcrossRecords_(records) {
-  const corrections = {};
-
-  (records || []).forEach(function(record) {
-    if (record.vertical !== 'PreInspection') return;
-
-    const tasks =
-      record.step5 && Array.isArray(record.step5.tasks)
-        ? record.step5.tasks
-        : [];
-
-    tasks.forEach(function(task) {
-      const taskId = tmv3_clean_(task && task['Task ID']);
-      if (!taskId) return;
-
-      if (!corrections[taskId]) {
-        corrections[taskId] = {
-          Start:null,
-          Due:null,
-          conflictStart:false,
-          conflictDue:false
-        };
-      }
-
-      [
-        ['Start', record.start],
-        ['Due', record.end]
-      ].forEach(function(pair) {
-        const field = pair[0];
-        const calendarValue = pair[1];
-        const taskValue = tmv3_clean_(task && task[field]);
-        if (!taskValue || !calendarValue) return;
-
-        const taskDate = tmv3_parseDateTime_(taskValue);
-        const calendarDate = tmv3_parseDateTime_(calendarValue);
-        if (!taskDate || !calendarDate) return;
-
-        if (
-          tmv3_step6LocalDay_(taskDate) !==
-          tmv3_step6LocalDay_(calendarDate)
-        ) {
-          return;
-        }
-
-        const diff = Math.abs(
-          taskDate.getTime() - calendarDate.getTime()
-        );
-
-        if (diff !== 12 * 60 * 60 * 1000) return;
-
-        const corrected = Utilities.formatDate(
-          calendarDate,
-          TMV3_TIMEZONE,
-          "yyyy-MM-dd'T'HH:mm:ssXXX"
-        );
-
-        if (
-          corrections[taskId][field] &&
-          corrections[taskId][field] !== corrected
-        ) {
-          corrections[taskId]['conflict' + field] = true;
-          return;
-        }
-
-        corrections[taskId][field] = corrected;
-      });
-    });
-  });
-
-  (records || []).forEach(function(record) {
-    if (record.vertical !== 'PreInspection' || !record.step5) return;
-
-    ['tasks','historyTasks'].forEach(function(listName) {
-      const list = Array.isArray(record.step5[listName])
-        ? record.step5[listName]
-        : [];
-
-      record.step5[listName] = list.map(function(task) {
-        const out = Object.assign({}, task || {});
-        const taskId = tmv3_clean_(out['Task ID']);
-        const fix = corrections[taskId];
-        if (!fix) return out;
-
-        if (fix.Start && !fix.conflictStart) out.Start = fix.Start;
-        if (fix.Due && !fix.conflictDue) out.Due = fix.Due;
-
-        return out;
-      });
-    });
-  });
-
+  // Never invent a corrected Striven timestamp by interpreting a 12-hour
+  // discrepancy. The exact mismatch must remain visible in the reconciliation.
   return records;
 }
 
-// Original: 42_Step5_Task_Resolution; Function: tmv3_step5AlignPreInspectionTaskClock_
 function tmv3_step5AlignPreInspectionTaskClock_(task, record) {
-  const out = Object.assign({}, task || {});
-
-  [
-    ['Start', record && record.start],
-    ['Due', record && record.end]
-  ].forEach(function(pair) {
-    const field = pair[0];
-    const calendarValue = pair[1];
-    const taskValue = tmv3_clean_(out[field]);
-
-    if (!taskValue || !calendarValue) return;
-
-    const taskDate = tmv3_parseDateTime_(taskValue);
-    const calendarDate = tmv3_parseDateTime_(calendarValue);
-
-    if (!taskDate || !calendarDate) {
-      return;
-    }
-
-    if (
-      tmv3_step6LocalDay_(taskDate) !==
-      tmv3_step6LocalDay_(calendarDate)
-    ) {
-      return;
-    }
-
-    const diff = Math.abs(
-      taskDate.getTime() - calendarDate.getTime()
-    );
-
-    // Striven V2 occasionally serializes afternoon 1–11 PM as 1–11 AM.
-    // Correct only the exact 12-hour case corroborated by this Calendar event.
-    if (diff === 12 * 60 * 60 * 1000) {
-      out[field] = Utilities.formatDate(
-        calendarDate,
-        TMV3_TIMEZONE,
-        "yyyy-MM-dd'T'HH:mm:ssXXX"
-      );
-    }
-  });
-
-  return out;
+  // Evidence-preserving, read-only copy. Do not adjust AM/PM without a verified
+  // server response and explicit normalization contract.
+  return Object.assign({},task||{});
 }
 
-// Original: 46_Step7_Reconciliation; Function: tmv3_step7HydrateLinkedPreInspectionTasks_
-function tmv3_step7HydrateLinkedPreInspectionTasks_(records, refs, runtime) {
-  (records || []).forEach(function(record) {
-    const identity = record.step4 || {};
-    const customerId = tmv3_clean_(identity.customer && identity.customer['Customer ID']);
-    const linkedId = tmv3_clean_(record.existingTaskId);
-    if (identity.disposition !== 'VERIFIED' ||
-        !customerId || !linkedId || (record.vertical==='PreInspection' && refs.taskById[linkedId])) return;
-    if (!/^[1-9]\d*$/.test(linkedId)) {
-      throw new Error('PREINSPECTION_LINKED_TASK_ID_INVALID_NO_CREATE');
+function tmv3_step7HydrateLinkedPreInspectionTasks_(records,refs,runtime) {
+  (records||[]).forEach(function(record){
+    if (!record || record.vertical!=='PreInspection') return;
+    const step4=record.step4||{};
+    const cid=String(tmv3_clean_(step4.customer && step4.customer['Customer ID']));
+    const id=String(tmv3_clean_(record.existingTaskId));
+    if (step4.disposition!=='VERIFIED'||!cid||!id||(refs.taskById||{})[id])return;
+    if(!/^[1-9]\d*$/.test(id))throw new Error('PI_LINKED_TASK_ID_INVALID_NO_CREATE');
+    const fresh=tmv3_step7FreshTask_(id,runtime);
+    if(!fresh.ok||!fresh.task||String(fresh.task['Task ID'])!==id||
+        Number(fresh.task['Task Type ID'])!==105||
+        String(fresh.task['Customer ID'])!==cid) {
+      throw new Error('PI_LINKED_TASK_FRESH_OWNERSHIP_UNVERIFIED_NO_CREATE:'+id);
     }
-    // Exact linked ID only, one fresh GET shared with the later Step 7 checks.
-    // Failed/mismatched reads remain blocked; they never authorize CREATE.
-    const fresh = tmv3_step7FreshTask_(linkedId, runtime);
-    if (!fresh.ok || !fresh.task ||
-        tmv3_clean_(fresh.task['Task ID']) !== linkedId ||
-        !tmv3_taskFitsVertical_(fresh.task,record.vertical,TMV3.VERTICALS[record.vertical]) ||
-        tmv3_clean_(fresh.task['Customer ID']) !== customerId) {
-      throw new Error('PREINSPECTION_LINKED_TASK_UNVERIFIED_NO_CREATE: ' + linkedId);
-    }
-    const task = fresh.task;
-    refs.taskById[linkedId] = task;
-    refs.tasks=refs.tasks.filter(function(t){return tmv3_clean_(t['Task ID'])!==linkedId;});
-    Object.keys(refs.tasksByCustomer).forEach(function(k){refs.tasksByCustomer[k]=refs.tasksByCustomer[k].filter(function(t){return tmv3_clean_(t['Task ID'])!==linkedId;});});
-    Object.keys(refs.tasksByOrder).forEach(function(k){refs.tasksByOrder[k]=refs.tasksByOrder[k].filter(function(t){return tmv3_clean_(t['Task ID'])!==linkedId;});});
-    refs.tasks.push(task);
-    if (!refs.tasksByCustomer[customerId]) refs.tasksByCustomer[customerId] = [];
-    refs.tasksByCustomer[customerId].push(task);
-    const orderId = tmv3_clean_(task['Order ID']);
-    if (orderId) {
-      if (!refs.tasksByOrder[orderId]) refs.tasksByOrder[orderId] = [];
-      refs.tasksByOrder[orderId].push(task);
-    }
-    tmv3_upsertTaskCacheRow_(task);
+    refs.tasksByCustomer=refs.tasksByCustomer||{};
+    refs.tasksByOrder=refs.tasksByOrder||{};
+    refs.taskById[id]=fresh.task;
+    refs.tasks=(refs.tasks||[]).filter(function(t){return String(t['Task ID'])!==id;});
+    refs.tasks.push(fresh.task);
+    Object.keys(refs.tasksByCustomer||{}).forEach(function(k){
+      refs.tasksByCustomer[k]=refs.tasksByCustomer[k].filter(function(t){return String(t['Task ID'])!==id;});
+    });
+    if(!refs.tasksByCustomer[cid])refs.tasksByCustomer[cid]=[];
+    refs.tasksByCustomer[cid].push(fresh.task);
+    Object.keys(refs.tasksByOrder||{}).forEach(function(k){
+      refs.tasksByOrder[k]=refs.tasksByOrder[k].filter(function(t){return String(t['Task ID'])!==id;});
+    });
+    const orderId=String(tmv3_clean_(fresh.task['Order ID']));
+    if(orderId){if(!refs.tasksByOrder[orderId])refs.tasksByOrder[orderId]=[];
+      refs.tasksByOrder[orderId].push(fresh.task);}
+    tmv3_upsertTaskCacheRow_(fresh.task);
   });
 }
 
-// Original: 50_Verticals; Function: tmv3_preInspectionAssignmentOverride_
 function tmv3_preInspectionAssignmentOverride_(record) {
-  if (!record || !tmv3_clean_(record.eventId) || typeof PropertiesService === 'undefined') return [];
-  const key = 'TMV3_PI_ASSIGNMENT_OVERRIDE_' + tmv3_hash_(record.eventId);
-  const raw = PropertiesService.getScriptProperties().getProperty(key);
-  if (!raw) {
-    // The employee comes from the original verified appointment organizer,
-    // never from the sales representative who created the event or a guest.
-    const owner=String(record.organizerCalendarId||'').toLowerCase();
-    const stephen=String((TMV3.VERTICALS.PreInspection.secondaryCalendarIds||[])[0]||'').toLowerCase();
-    if (owner && owner===stephen) return [15]; // Stephen Foley — verified Striven employee ID.
-    if (owner==='jay@classicfireplace.ca') return [1]; // Jay Scott — verified Striven employee ID.
-    if (owner==='karen@classicfireplace.ca')
-      throw new Error('PREINSPECTION_KAREN_STRIVEN_EMPLOYEE_ID_NOT_VERIFIED_NO_WRITE');
-    return []; // Unknown organizer: preserve Pool 8, never invent an employee.
-  }
-  let value;
-  try { value = JSON.parse(raw); } catch (error) { throw new Error('PREINSPECTION_ASSIGNMENT_OVERRIDE_INVALID'); }
-  const employeeId = Number(value.employeeId);
-  if (String(value.eventId || '') !== String(record.eventId) ||
-      !value.customerNumber || String(value.customerNumber) !== String(record.customerNumber || '') ||
-      !value.organizerCalendarId || String(value.organizerCalendarId) !== String(record.organizerCalendarId || '') ||
-      !Number.isSafeInteger(employeeId) || employeeId <= 0) {
-    throw new Error('PREINSPECTION_ASSIGNMENT_OVERRIDE_EVIDENCE_MISMATCH');
-  }
-  return [employeeId];
+  if(!record || !record.eventId) throw new Error('PI_EVENT_ID_REQUIRED_FOR_ASSIGNMENT');
+  // An operator override never bypasses owner identity review. Overrides may
+  // only reaffirm the exact verified owner mapping; otherwise block writes.
+  const owner=tmv3_piVerifiedOwnerEmployee_(record);
+  if(owner.status!=='MATCHED')throw new Error(owner.blocker);
+  const key='TMV3_PI_ASSIGNMENT_OVERRIDE_'+tmv3_hash_(record.eventId);
+  const raw=PropertiesService.getScriptProperties().getProperty(key);
+  if(!raw)return [owner.employeeId];
+  let saved;try{saved=JSON.parse(raw);}catch(error){throw new Error('PI_ASSIGNMENT_OVERRIDE_INVALID');}
+  if(String(saved.eventId)!==String(record.eventId)||
+     String(saved.customerNumber)!==String(record.customerNumber)||
+     String(saved.organizerCalendarId)!==String(record.organizerCalendarId)||
+     Number(saved.employeeId)!==owner.employeeId)
+    throw new Error('PI_OVERRIDE_CONFLICTS_WITH_VERIFIED_OWNER_NO_WRITE');
+  return [owner.employeeId];
 }
 
-// Original: 50_Verticals; Function: tmv3_configurePreInspectionAssignmentOverride
-function tmv3_configurePreInspectionAssignmentOverride(eventId, customerNumber, organizerCalendarId, employeeId) {
-  if (!/^[a-z0-9_]+@google\.com$/.test(String(eventId || '')) ||
-      !/^\d{3,8}$/.test(String(customerNumber || '')) ||
-      !tmv3_clean_(organizerCalendarId) || !Number.isSafeInteger(Number(employeeId)) ||
-      Number(employeeId) <= 0 || !tmv3_employeeNameById_(employeeId)) {
-    throw new Error('PREINSPECTION_ASSIGNMENT_OVERRIDE_INVALID');
-  }
+function tmv3_configurePreInspectionAssignmentOverride(eventId,customerNumber,organizerCalendarId,employeeId) {
+  // Preserve the existing public function but refuse unverified arbitrary IDs.
+  if(!/^[a-z0-9_]+@google\.com$/i.test(String(eventId||'')))throw new Error('PI_EVENT_ID_INVALID');
   const record=tmv3_findFreshEventRecord_('PreInspection',eventId);
-  if (!record || String(record.eventId)!==String(eventId) ||
-      String(record.customerNumber || '')!==String(customerNumber) ||
-      String(record.organizerCalendarId || '')!==String(organizerCalendarId)) {
-    throw new Error('PREINSPECTION_ASSIGNMENT_OVERRIDE_EVIDENCE_MISMATCH');
-  }
+  if(!record||String(record.customerNumber)!==String(customerNumber)||
+      String(record.organizerCalendarId)!==String(organizerCalendarId))
+    throw new Error('PI_ASSIGNMENT_SOURCE_EVIDENCE_CHANGED');
+  const approved=tmv3_piVerifiedOwnerEmployee_(record);
+  if(approved.status!=='MATCHED'||Number(employeeId)!==approved.employeeId)
+    throw new Error('PI_OPERATOR_OVERRIDE_MUST_MATCH_VERIFIED_OWNER');
   const value={eventId:String(eventId),customerNumber:String(customerNumber),
-    organizerCalendarId:String(organizerCalendarId),employeeId:Number(employeeId)};
+    organizerCalendarId:String(organizerCalendarId),employeeId:approved.employeeId};
   const key='TMV3_PI_ASSIGNMENT_OVERRIDE_'+tmv3_hash_(eventId);
-  const props=PropertiesService.getScriptProperties();props.setProperty(key,JSON.stringify(value));
-  if (props.getProperty(key)!==JSON.stringify(value)) throw new Error('PREINSPECTION_ASSIGNMENT_OVERRIDE_READBACK_FAILED');
-  return {status:'ASSIGNMENT_OVERRIDE_VERIFIED',employeeId:Number(employeeId),businessWrites:0};
+  PropertiesService.getScriptProperties().setProperty(key,JSON.stringify(value));
+  return {status:'VERIFIED_OWNER_OVERRIDE_SAVED',employeeId:approved.employeeId,
+    businessWrites:0};
 }
 
-// Explicit operator approval, scoped to immutable iCalUID. No write permission.
 function tmv3_preInspectionApprovalHold_(eventId) {
   const normalized=String(eventId||'').trim().toLowerCase().replace(/@google[.]com$/,'');
   const entries=TMV3_HARD_RULES.PreInspection.operatorApprovedIntakeHolds||[];
@@ -1704,125 +1163,26 @@ function tmv3_preInspectionApprovalHold_(eventId) {
 
 // Original: 50_Verticals; Function: tmv3_preInspectionCreatePolicy
 function tmv3_preInspectionCreatePolicy() {
-  return {
-    taskTypeId: 105,
-    attachSalesOrder: false,
-    description: '',
-    calendarNotes: 'CALENDAR_ONLY',
-    previousCalendarTitlePolicy: 'PRESERVE_AS_FIRST_DESCRIPTION_LINE_NO_HEADER',
-    descriptionHeaderPolicy: 'REMOVE_NOTES_AND_SALES_ORDER_LABELS_PRESERVE_CONTENT',
-    calendarCopyParityPolicy: 'FULL_BUSINESS_VISIBLE_PARITY_REQUIRED',
-    calendarLinksPreservationPolicy: 'PRESERVE_EXISTING_CLICKABLE_BLOCK_REPAIR_NONCLICKABLE_OR_MISSING_ONLY',
-    calendarTaskLinkLabelPolicy: 'TASK_ID_PLUS_ACTUAL_STRIVEN_TASK_NAME',
-    field854: 'DO_NOT_MANAGE',
-    infoCustomFieldsAtCreate: 'NONE',
-    requiredPoolId: 8,
-    requestedBy: 'CALENDAR_ORGANIZER',
-    assignedToFromOrganizer: false,
-    calendarLinks: [
-      'CUSTOMER_SALES_ORDERS_PAGE',
-      'TASK'
-    ],
-    technicianFields: 'DO_NOT_PREFILL'
-  };
+  return {taskTypeId:105,requiredPoolId:8,attachSalesOrder:false,
+    description:'',calendarNotes:'CALENDAR_ONLY',
+    infoCustomFieldsAtCreate:'NONE',field854:'DO_NOT_MANAGE',
+    inspectorOwnedFields:[852,853,854,860],
+    previousCalendarTitlePolicy:'PRESERVE_ORIGINAL_UNMODIFIED',
+    calendarLinksPreservationPolicy:'PRESERVE_AUTHORED_TEXT_AND_CLICKABLE_LINKS',
+    requestedBy:'EMPLOYEE_VERIFIED_CALENDAR_OWNER_ONLY',
+    assignedToFromOrganizer:'VERIFIED_OWNER_ONLY',
+    guestChanges:'NO_UNATTENDED_INVITATIONS',
+    calendarLinks:['CUSTOMER_SALES_ORDERS_PAGE','TASK']};
 }
 
-// Original: 58_Operations; Function: tmv3_ensurePreInspectionMirror_
-function tmv3_ensurePreInspectionMirror_(eventRecord, scope) {
-  if(tmv3_preInspectionApprovalHold_(eventRecord&&eventRecord.eventId))return {status:'APPROVAL_GUEST_HOLD',writePerformed:false};
-  // An appointment owned by another organizer must not invite Stephen.
-  const organizer=tmv3_clean_(eventRecord && eventRecord.organizerCalendarId);
-  if (!organizer) return {status:'OWNER_UNKNOWN_NO_GUEST_WRITE',writePerformed:false};
-  const secondary=((TMV3.VERTICALS.PreInspection || {}).secondaryCalendarIds || []).map(tmv3_clean_);
-  if (eventRecord && eventRecord.vertical==='PreInspection' && organizer && secondary.indexOf(organizer)<0) {
-    return {status:'OTHER_ORGANIZER_NO_STEPHEN_MIRROR',writePerformed:false};
-  }
-  if (
-    !eventRecord ||
-    eventRecord.vertical !== 'PreInspection'
-  ) {
-    return { status:'NOT_NEEDED', writePerformed:false };
-  }
-
-  tmv3_assertOperationWrite_(scope);
-
-  const cfg = TMV3.VERTICALS.PreInspection || {};
-  const primaryId = tmv3_clean_(cfg.primaryCalendarId);
-  const stephenEmail = tmv3_normEmail_(
-    cfg.secondaryOwnerEmail ||
-    'stephen@classicfireplace.ca'
-  );
-
-  if (!primaryId || !stephenEmail) {
-    throw new Error(
-      'PreInspection primary Calendar or Stephen guest email is not configured.'
-    );
-  }
-
-  const primaryCopy = tmv3_findEventCopyRobust_(
-    primaryId,
-    eventRecord.eventId
-  );
-
-  if (!primaryCopy || !primaryCopy.event) {
-    throw new Error(
-      'Authoritative CF Preinspects event could not be found for Event ' +
-      eventRecord.eventId + '.'
-    );
-  }
-
-  function guestEmails(event) {
-    return (event.getGuestList ? event.getGuestList(true) : [])
-      .map(function(guest) {
-        return tmv3_normEmail_(
-          guest && guest.getEmail ? guest.getEmail() : ''
-        );
-      })
-      .filter(Boolean);
-  }
-
-  if (
-    guestEmails(primaryCopy.event).indexOf(
-      stephenEmail
-    ) !== -1
-  ) {
-    return {
-      status:'STEPHEN_ALREADY_PRESENT',
-      writePerformed:false,
-      primaryCalendarId:primaryId,
-      stephenEmail:stephenEmail
-    };
-  }
-
-  primaryCopy.event.addGuest(stephenEmail);
-
-  const readback = tmv3_findEventCopyRobust_(
-    primaryId,
-    eventRecord.eventId
-  );
-
-  if (
-    !readback ||
-    !readback.event ||
-    guestEmails(readback.event).indexOf(
-      stephenEmail
-    ) === -1
-  ) {
-    throw new Error(
-      'PreInspection Stephen guest read-back failed for Event ' +
-      eventRecord.eventId + '.'
-    );
-  }
-
-  return {
-    status:'STEPHEN_GUEST_WRITTEN_AND_VERIFIED',
-    writePerformed:true,
-    primaryCalendarId:primaryId,
-    stephenEmail:stephenEmail
-  };
+function tmv3_ensurePreInspectionMirror_(record,scope) {
+  // Disallow calendar guest mutations in unattended automation. Invites
+  // propagate notifications and must be a separately authorized operator act.
+  return {status:'PI_GUEST_CHANGE_OPERATOR_APPROVAL_REQUIRED',
+    eventId:record&&record.eventId||'',writePerformed:false,
+    calendarWrites:0,guestInvites:0};
 }
 
-// Original: 58_Operations; Function: tmv3_preInspectionCalendarBusinessSnapshot_
 function tmv3_preInspectionCalendarBusinessSnapshot_(event) {
   if (!event) throw new Error('PreInspection Calendar snapshot requires an event.');
 
@@ -1874,196 +1234,55 @@ function tmv3_preInspectionCalendarParityEqual_(expected, actual) {
 }
 
 // Original: 58_Operations; Function: tmv3_reconcilePreInspectionCalendarParity_
-function tmv3_reconcilePreInspectionCalendarParity_(eventRecord, scope) {
-  if(tmv3_preInspectionApprovalHold_(eventRecord&&eventRecord.eventId))return {status:'APPROVAL_CALENDAR_HOLD',copies:[],writes:0};
-  if (!eventRecord || eventRecord.vertical !== 'PreInspection') {
-    return { status:'NOT_NEEDED', copies:[] };
-  }
-
-  tmv3_assertOperationWrite_(scope);
-
-  const cfg = TMV3.VERTICALS.PreInspection || {};
-  const primaryId = tmv3_clean_(cfg.primaryCalendarId);
-  const ids = tmv3_requiredCalendarCopiesForEvent_(eventRecord);
-
-  if (!primaryId || !ids.length) {
-    throw new Error('PreInspection Calendar parity configuration is incomplete.');
-  }
-
-  const primaryFound = tmv3_findEventCopyRobust_(
-    primaryId,
-    eventRecord.eventId
-  );
-  if (!primaryFound || !primaryFound.event) {
-    throw new Error(
-      'Authoritative CF Preinspects copy is missing; parity cannot be reconciled.'
-    );
-  }
-
-  const authority = tmv3_preInspectionCalendarBusinessSnapshot_(
-    primaryFound.event
-  );
-  if (authority.allDay) {
-    throw new Error(
-      'PreInspection parity refuses to normalize an all-day authoritative event.'
-    );
-  }
-
-  const results = [];
-
-  ids.forEach(function(calendarId) {
-    const found = tmv3_findEventCopyRobust_(
-      calendarId,
-      eventRecord.eventId
-    );
-    if (!found || !found.event) {
-      throw new Error(
-        'Required PreInspection Calendar copy is missing: ' + calendarId
-      );
-    }
-
-    const event = found.event;
-    let before = tmv3_preInspectionCalendarBusinessSnapshot_(event);
-    let writePerformed = false;
-
-    if (before.title !== authority.title) {
-      event.setTitle(authority.title);
-      writePerformed = true;
-    }
-    if (before.description !== authority.description) {
-      event.setDescription(authority.description);
-      writePerformed = true;
-    }
-    if (before.location !== authority.location) {
-      event.setLocation(authority.location);
-      writePerformed = true;
-    }
-    if (
-      before.start !== authority.start ||
-      before.end !== authority.end ||
-      before.allDay !== authority.allDay
-    ) {
-      if (before.allDay || authority.allDay) {
-        throw new Error(
-          'PreInspection parity will not convert between all-day and timed events.'
-        );
-      }
-      event.setTime(
-        new Date(authority.start),
-        new Date(authority.end)
-      );
-      writePerformed = true;
-    }
-
-    if (
-      authority.requiredStephenPresent &&
-      !before.requiredStephenPresent
-    ) {
-      event.addGuest(
-        tmv3_normEmail_(
-          cfg.secondaryOwnerEmail ||
-          'stephen@classicfireplace.ca'
-        )
-      );
-      writePerformed = true;
-    }
-
-    const readbackFound = tmv3_findEventCopyRobust_(
-      calendarId,
-      eventRecord.eventId
-    );
-    if (!readbackFound || !readbackFound.event) {
-      throw new Error(
-        'Required PreInspection Calendar copy disappeared during parity read-back.'
-      );
-    }
-
-    const after = tmv3_preInspectionCalendarBusinessSnapshot_(
-      readbackFound.event
-    );
-
-    if (!tmv3_preInspectionCalendarParityEqual_(authority, after)) {
-      throw new Error(
-        'PreInspection cross-calendar parity read-back failed on ' +
-        calendarId +
-        '. Expected=' + JSON.stringify(authority) +
-        ' Actual=' + JSON.stringify(after)
-      );
-    }
-
-    results.push({
-      calendarId:calendarId,
-      status:writePerformed ? 'WRITTEN_AND_VERIFIED' : 'ALREADY_MATCHED',
-      businessState:after
-    });
+function tmv3_reconcilePreInspectionCalendarParity_(record,scope) {
+  // Audit copies but never blindly synchronize, rename, reschedule, or add
+  // attendees to the representative's private appointment.
+  if(!record||record.vertical!=='PreInspection')return {status:'NOT_NEEDED',copies:[],writes:0};
+  const cfg=TMV3.VERTICALS.PreInspection||{};
+  const primaryId=String(cfg.primaryCalendarId||'');
+  if(!primaryId)throw new Error('PI_PRIMARY_CALENDAR_NOT_CONFIGURED');
+  const master=tmv3_findEventCopyRobust_(primaryId,record.eventId);
+  if(!master||!master.event)throw new Error('PI_AUTHORITY_EVENT_MISSING');
+  const authority=tmv3_preInspectionCalendarBusinessSnapshot_(master.event);
+  const ids=tmv3_unique_(tmv3_requiredCalendarCopiesForEvent_(record)||[]);
+  const differences=[];
+  ids.forEach(function(calendarId){
+    if(String(calendarId)===primaryId)return;
+    const found=tmv3_findEventCopyRobust_(calendarId,record.eventId);
+    if(!found||!found.event){differences.push({calendarId:calendarId,issue:'COPY_NOT_ACCESSIBLE_OR_MISSING'});return;}
+    const state=tmv3_preInspectionCalendarBusinessSnapshot_(found.event);
+    const fields=['title','description','location','start','end','allDay'];
+    const changed=fields.filter(function(key){return authority[key]!==state[key];});
+    if(changed.length)differences.push({calendarId:calendarId,issue:'PARITY_MISMATCH',fields:changed});
   });
-
-  return {
-    status:'FULL_BUSINESS_VISIBLE_PARITY_VERIFIED',
-    authoritativeCalendarId:primaryId,
-    eventId:eventRecord.eventId,
-    copies:results
-  };
+  return {status:differences.length?'PI_PARITY_REVIEW_REQUIRED':'PI_PARITY_READ_ONLY_MATCH',
+    authoritativeCalendarId:primaryId,eventId:record.eventId,copies:ids.length,
+    differences:differences,writes:0,guestInvites:0};
 }
 
-// Original: 58_Operations; Function: tmv3_enforcePreInspectionCreatePayloadHardRules_
 function tmv3_enforcePreInspectionCreatePayloadHardRules_(payload) {
-  payload = payload || {};
-
-  delete payload.SalesOrder;
-  delete payload.SalesOrderId;
-  delete payload.SalesOrderID;
-  delete payload.SOId;
-  delete payload.InfoCustomFields;
-  payload.Description = '';
-
+  payload=payload||{};
+  Object.keys(payload).forEach(function(k){
+    if(/^(?:SalesOrder|SalesOrderId|SalesOrderID|SOId|OrderId|OrderID|InfoCustomFields|CustomFields|CustomFieldValues|TaskFields|InfoFields|Fields)$/i.test(k))
+      delete payload[k];
+  });
+  payload.Description='';
   return payload;
 }
 
-// Original: 58_Operations; Function: tmv3_assertPreInspectionCreatePayloadHardRules_
 function tmv3_assertPreInspectionCreatePayloadHardRules_(payload) {
-  const errors = [];
-  const type = payload && payload.Type || {};
-  const description = String(payload && payload.Description || '');
-  const hasOrder = !!(
-    payload &&
-    (
-      payload.SalesOrder ||
-      payload.SalesOrderId ||
-      payload.SalesOrderID ||
-      payload.SOId
-    )
-  );
-  const hasCustomFields = !!(
-    payload &&
-    Array.isArray(payload.InfoCustomFields) &&
-    payload.InfoCustomFields.length
-  );
-
-  if (Number(type.Id || type.id || 0) !== 105) {
-    errors.push('Task Type must be 105.');
-  }
-  if (hasOrder) {
-    errors.push('Sales Order attachment is forbidden.');
-  }
-  if (description !== '') {
-    errors.push('Task Description must be blank at CREATE.');
-  }
-  if (hasCustomFields) {
-    errors.push('PreInspection CREATE must not prefill InfoCustomFields, including Field 854.');
-  }
-
-  if (errors.length) {
-    throw new Error(
-      'PREINSPECTION HARD RULE VIOLATION: ' +
-      errors.join(' | ')
-    );
-  }
-
+  const p=payload||{},type=p.Type||{};
+  if(Number(type.Id||type.id)!==105)throw new Error('PI_CREATE_TYPE_MUST_BE_105');
+  if(Object.keys(p).some(function(k){
+    return /^(?:SalesOrder|SalesOrderId|SalesOrderID|SOId|OrderId|OrderID|InfoCustomFields|CustomFields|CustomFieldValues|TaskFields|InfoFields|Fields)$/i.test(k);
+  }))throw new Error('PI_CREATE_FORBIDDEN_ORDER_OR_CUSTOM_FIELDS');
+  if(p.Description!=='' )throw new Error('PI_CREATE_DESCRIPTION_NOT_BLANK');
+  // Requested By must be a real Striven Employee, not a Customer Contact.
+  // Organizer ownership is enforced at the canonical plan boundary.
+  tmv3_piAssertRequestedByEmployeeShape_(p.RequestedBy);
   return true;
 }
 
-// Original: 58_Operations; Function: tmv3_preInspectionGuestEmails_
 function tmv3_preInspectionGuestEmails_(eventRecord) {
   return tmv3_unique_(
     String(eventRecord && eventRecord.guests || '')
@@ -2379,6 +1598,11 @@ function tmv3_preInspectionRejectedAddressGuard_(guard,preflight) {
 
 // Original: 58_Operations; Function: tmv3_preInspectionOptionalOrderLocationEvidence_
 function tmv3_preInspectionOptionalOrderLocationEvidence_(record) {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_preInspectionOptionalOrderLocationEvidence_(record);
+}
+
+function tmv3_piOriginal_preInspectionOptionalOrderLocationEvidence_(record) {
   if (!record || record.vertical!=='PreInspection' || !/^\d+$/.test(String(record.orderNumber||''))) return {status:'NOT_REQUIRED'};
   const s2=tmv3_step2CalendarRecords_([record]);
   const s3=tmv3_step3BusinessAnchorRecords_(s2,tmv3_step3AnchorIndex_());
@@ -2438,30 +1662,13 @@ function tmv3_preInspectionCanonicalCacheTask_(task,canonical) {
 }
 
 // Original: 60_Automation; Function: tmv3_preInspectionGuestSyncDecision_
-function tmv3_preInspectionGuestSyncDecision_(guestEmails, stephenEmail, ownerCalendarId) {
-  // Owner is required. Guest presence alone must never add Stephen.
-  const cfg = TMV3.VERTICALS.PreInspection || {};
-  const verifiedStephenCalendar = String((cfg.secondaryCalendarIds || [])[0] || '').trim();
-  const actualOwner = String(ownerCalendarId || '').trim();
-  if (!actualOwner) return {status:'OWNER_NOT_VERIFIED',action:'NONE'};
-  if (!verifiedStephenCalendar || actualOwner !== verifiedStephenCalendar)
-    return {status:'OTHER_OWNER_NO_STEPHEN',action:'NONE'};
-  const stephen = tmv3_normEmail_(stephenEmail || cfg.secondaryOwnerEmail);
-  if (!stephen) return {status:'BLOCKED_CONFIG',action:'NONE'};
-  const guests = tmv3_unique_((guestEmails || []).map(tmv3_normEmail_).filter(Boolean));
-  if (guests.indexOf(stephen) >= 0) return {status:'ALREADY_PRESENT',action:'NONE'};
-  return {status:'ADD_STEPHEN',action:'ADD'};
+function tmv3_preInspectionGuestSyncDecision_(guestEmails,stephenEmail,ownerCalendarId) {
+  const owner=String(ownerCalendarId||'').trim();
+  if(!owner)return {status:'OWNER_NOT_VERIFIED',action:'NONE'};
+  return {status:'REVIEW_ONLY_NO_UNATTENDED_GUEST_CHANGES',action:'NONE'};
 }
 
-// Original next-section boundary
-function tmv3_reconcilePreInspectionSharedGuest_AUTO_(options) {
-  // Legacy global Stephen sync is unsafe for Jay/Karen appointments.
-  // Keep the public entrypoint without mutating any Calendar guest.
-  tmv3_piAssertLockedStandard_();
-  return {status:'RETIRED_UNCONDITIONAL_STEPHEN_GUEST_SYNC',
-    standard:'2026-11-10-r1',writes:0,scanned:0,
-    reason:'OWNER_SPECIFIC_GUEST_SYNC_ONLY'};
-}
+function tmv3_reconcilePreInspectionSharedGuest_AUTO_() { return {status:'RETIRED_UNCONDITIONAL_GUEST_SYNC',writes:0,emailsSent:0,guestInvites:0}; }
 
 function tmv3_preInspectionExplicitCandidate_(record) {
   return !!record && tmv3_preInspectionClassifyLikely_(record,TMV3.VERTICALS.PreInspection).status==='EXPLICIT_PREINSPECTION';
@@ -2541,36 +1748,40 @@ function tmv3_preInspectionClassifyLikely_(record,cfg,fresh) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionOrderBeforeCreate_
 function tmv3_preInspectionOrderBeforeCreate_(record,plan) {
-  if (record && record.calendarRole==='PRIMARY_SHARED' && record.calendarId===TMV3.VERTICALS.PreInspection.primaryCalendarId) return {status:'SHARED_PREINSPECTION_CALENDAR_ORDER_STATUS_NOT_REQUIRED'};
-  const key='TMV3_PI_INFERRED_'+tmv3_hash_(record.eventId);
-  const rawEvidence=PropertiesService.getScriptProperties().getProperty(key);
-  const evidence=rawEvidence ? JSON.parse(rawEvidence) : null;
-  const number=String(record.orderNumber || (evidence && evidence.orderNumber) || '');
-  if(!number)return {status:'OPTIONAL_ORDER_NOT_ATTACHED'};
-  if(!/^\d+$/.test(number))throw Error('PREINSPECTION_ORDER_STATUS_UNVERIFIED_NO_CREATE');
-  const customerId=Number(plan.expectedCustomerId),locationId=Number(plan.expectedLocationId);
-  if(!Number.isSafeInteger(customerId)||customerId<=0)throw Error('PREINSPECTION_ORDER_CUSTOMER_UNVERIFIED_NO_CREATE');
-  if(evidence && (String(evidence.orderNumber)!==number || Number(evidence.customerId)!==customerId || Number(evidence.locationId)!==locationId))throw Error('PREINSPECTION_INFERRED_ORDER_EVIDENCE_CONFLICT_NO_CREATE');
-  let id=Number(evidence && evidence.orderId);
-  if(!Number.isSafeInteger(id)||id<=0){
-    const found=tmv3_fetchJson_(TMV3.API_BASE+'/v1/sales-orders/search',{method:'post',contentType:'application/json',payload:JSON.stringify({PageIndex:0,PageSize:2,Number:number,CustomerId:customerId})});
-    const data=tmv3_first_(found,['Data']),count=Number(tmv3_first_(found,['TotalCount']));
-    if(!Array.isArray(data)||count!==1||data.length!==1||String(tmv3_first_(data[0],['Number']))!==number)throw Error('PREINSPECTION_ORDER_NOT_UNIQUE_NO_CREATE');
-    id=Number(tmv3_first_(data[0],['Id']));
-  }
-  if(!Number.isSafeInteger(id)||id<=0)throw Error('PREINSPECTION_ORDER_ID_UNVERIFIED_NO_CREATE');
-  const order=tmv3_fetchJson_(TMV3.API_BASE+'/v1/sales-orders/'+id,{method:'get'});
-  const customer=tmv3_first_(order,['Customer']),status=tmv3_first_(order,['Status']);
-  if(Number(tmv3_first_(order,['Id']))!==id || String(tmv3_first_(order,['OrderNumber','Number']))!==number || Number(tmv3_first_(customer,['Id']))!==customerId)throw Error('PREINSPECTION_ORDER_OWNERSHIP_CONFLICT_NO_CREATE');
-  const statusId=String(tmv3_first_(status,['Id'])),statusName=tmv3_norm_(tmv3_first_(status,['Name']));
-  const known={'18':'incomplete','19':'quoted','20':'pending approval','22':'approved','25':'in progress'};
-  if(!known[statusId]||known[statusId]!==statusName)throw Error('PREINSPECTION_ORDER_STATUS_UNVERIFIED_NO_CREATE');
-  if(statusId==='22')throw Error('APPROVED_ORDER_REQUIRES_INSTALLATION_NO_PREINSPECTION_CREATE');
-  if(statusId==='25')throw Error('IN_PROGRESS_ORDER_TYPE_UNVERIFIED_NO_PREINSPECTION_CREATE');
-  return {status:'FRESH_PREAPPROVAL_ORDER_VERIFIED',orderId:id,orderNumber:number,orderStatus:statusName};
+  // Sales Order is optional and never attached at create. If an explicit SO
+  // exists, however, a known Approved order must not be misclassified as PI.
+  if(!record || record.vertical!=='PreInspection')throw new Error('PI_RECORD_REQUIRED');
+  const number=String(tmv3_clean_(record.orderNumber));
+  if(!number)return {status:'OPTIONAL_ORDER_MISSING_NOT_AN_ERROR'};
+  if(!/^\d{4,8}$/.test(number))throw new Error('PI_SO_NUMBER_INVALID_REVIEW');
+  const cid=Number(plan.expectedCustomerId);
+  if(!Number.isSafeInteger(cid)||cid<=0)throw new Error('PI_CUSTOMER_NOT_VERIFIED_NO_CREATE');
+  const response=tmv3_fetchJson_(TMV3.API_BASE+'/v1/sales-orders/search',{
+    method:'post',contentType:'application/json',
+    payload:JSON.stringify({PageIndex:0,PageSize:2,Number:number,CustomerId:cid})});
+  const rows=response && (response.Data||response.data);
+  const count=Number(response&&(response.TotalCount!==undefined?response.TotalCount:response.totalCount));
+  if(!Array.isArray(rows)||count!==1||rows.length!==1||
+      String(tmv3_first_(rows[0],['Number','OrderNumber']))!==number)
+    throw new Error('PI_SO_NOT_UNIQUE_OR_SOURCE_INCOMPLETE_NO_CREATE');
+  const orderId=Number(tmv3_first_(rows[0],['Id','id']));
+  if(!Number.isSafeInteger(orderId)||orderId<=0)throw new Error('PI_SO_ID_UNVERIFIED');
+  const order=tmv3_fetchJson_(TMV3.API_BASE+'/v1/sales-orders/'+orderId,{method:'get'});
+  const customer=tmv3_first_(order,['Customer','customer']);
+  const status=tmv3_first_(order,['Status','status']);
+  if(Number(tmv3_first_(order,['Id','id']))!==orderId||
+      String(tmv3_first_(order,['OrderNumber','Number']))!==number||
+      Number(tmv3_first_(customer,['Id','id']))!==cid)
+    throw new Error('PI_SO_FRESH_IDENTITY_CONFLICT_NO_CREATE');
+  const name=tmv3_norm_(tmv3_first_(status,['Name','name']));
+  if(name==='approved')throw new Error('APPROVED_ORDER_INSTALLATION_REVIEW_NO_PI_CREATE');
+  if(name==='in progress')throw new Error('IN_PROGRESS_ORDER_VISIT_TYPE_REVIEW_NO_PI_CREATE');
+  if(!['quoted','incomplete','pending approval'].includes(name))
+    throw new Error('PI_SO_STATUS_UNVERIFIED_NO_CREATE');
+  return {status:'SO_CORROBORATION_ONLY_NOT_ATTACHED',orderId:orderId,
+    orderNumber:number,orderStatus:name};
 }
 
-// Original: 60_Automation; Function: tmv3_preInspectionStoreDiscovery_
 function tmv3_preInspectionStoreDiscovery_(records) {
   const sorted=records.slice().sort(function(a,b){return new Date(a.start)-new Date(b.start);});
   const state={checkedAt:new Date().toISOString(),total:sorted.length,
@@ -2598,13 +1809,16 @@ function tmv3_preInspectionDiscoveryStatus() {
 
 // Original: 60_Automation; Function: tmv3_refreshPreInspectionDiscovery
 function tmv3_refreshPreInspectionDiscovery() {
-  const lock=LockService.getScriptLock();if(!lock.tryLock(30000))return {status:'LOCK_BUSY',writes:0};
-  try{tmv3_preInspectionIntakeRecords_({recordDiscovery:true,resolveLikely:true});return tmv3_preInspectionDiscoveryStatus();}
-  finally{lock.releaseLock();}
+  // Search the four-calendar review directly; no live SO inference or imports.
+  return tmv3_piCalendarReviewRefresh_();
 }
 
-// Original: 60_Automation; Function: tmv3_reconcilePreInspectionEvent
 function tmv3_reconcilePreInspectionEvent(eventId) {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_reconcilePreInspectionEvent(eventId);
+}
+
+function tmv3_piOriginal_reconcilePreInspectionEvent(eventId) {
   if(!/^[a-z0-9_]+@google\.com$/.test(String(eventId || '')))throw new Error('INVALID_PREINSPECTION_EVENT_ID');
   const started=Date.now();
   const result=tmv3_preInspectionAutomationCycle_({force:true,eventId:eventId,reason:'TARGETED_RECONCILIATION'});
@@ -2614,91 +1828,41 @@ function tmv3_reconcilePreInspectionEvent(eventId) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionIntakeRecords_
 function tmv3_preInspectionIntakeRecords_(options) {
-  options=options || {};
-  const cfg = TMV3.VERTICALS.PreInspection;
-  const calendars = tmv3_verticalCalendars_('PreInspection',cfg).concat(
-    (cfg.secondaryCalendarIds || []).map(function(id) {
-      return {calendarId:id,calendarName:'Stephen',role:'SECONDARY_STEPHEN'};
-    })
-  );
-  const start = new Date(); start.setHours(0,0,0,0);
-  const end = new Date(start); end.setDate(end.getDate() + Number(cfg.lookaheadDays || 365));
-  const records = [], discovery = [];
-  calendars.forEach(function(source) {
-    const cal = CalendarApp.getCalendarById(source.calendarId);
-    if (!cal) throw new Error('PreInspection source calendar unavailable: ' + source.calendarId);
-    cal.getEvents(start,end).forEach(function(event) {
-      const record = tmv3_calendarEvent_('PreInspection',cfg,source,event,
-        {applyEligibility:false});
-      if (!record || tmv3_step2PreInspectionNonCustomer_(record)) return;
-      if (source.role === 'SECONDARY_STEPHEN') {
-        if(records.some(function(r){return r.calendarRole==='PRIMARY_SHARED' && r.eventId===record.eventId && tmv3_iso_(r.start)===tmv3_iso_(record.start);}))return;
-        const decision=options.resolveLikely===true ? tmv3_preInspectionClassifyLikely_(record,cfg) : tmv3_preInspectionDiscoveryDecision_(record,cfg);
-        if (decision.status==='IGNORE') return;
-        discovery.push({eventId:record.eventId,calendarId:record.calendarId,
-          title:String(record.title || '').slice(0,100),start:tmv3_iso_(record.start),
-          reason:decision.reason,status:decision.status,orders:decision.orders || [],error:decision.error || ''});
-        if (decision.status!=='EXPLICIT_PREINSPECTION') return;
-      }
-      records.push(record);
-    });
+  options=options||{};
+  const cfg=TMV3.VERTICALS.PreInspection;
+  const sources=tmv3_verticalCalendars_('PreInspection',cfg).filter(function(s){
+    return s.role==='PRIMARY_SHARED' && String(s.calendarId)===String(cfg.primaryCalendarId);
   });
-  const primaryKeys={};
-  records.filter(function(r){return r.calendarRole==='PRIMARY_SHARED';}).forEach(function(r){primaryKeys[r.eventId+'|'+tmv3_iso_(r.start)]=true;});
-  if(options.recordDiscovery===true) tmv3_preInspectionStoreDiscovery_(discovery.filter(function(r){return !primaryKeys[r.eventId+'|'+r.start];}));
-  const seen = {};
-  return records.filter(function(record) {
-    // CF source is visited first. Guest mirrors keep the same iCal UID.
-    const key = record.eventId + '|' + tmv3_iso_(record.start);
-    if (seen[key]) return false;
-    seen[key] = true;
-    return true;
-  }).sort(function(a,b) { return new Date(a.start)-new Date(b.start); });
+  if(sources.length!==1)throw new Error('PI_AUTHORITATIVE_SOURCE_NOT_UNIQUE');
+  const today=new Date();today.setHours(0,0,0,0);
+  const end=new Date(today);end.setDate(end.getDate()+Math.max(1,Number(cfg.lookaheadDays||365)));
+  const primary=CalendarApp.getCalendarById(cfg.primaryCalendarId);
+  if(!primary)throw new Error('PI_PRIMARY_CALENDAR_INACCESSIBLE');
+  const records=primary.getEvents(today,end).map(function(ev){
+    return tmv3_calendarEvent_('PreInspection',cfg,sources[0],ev,{applyEligibility:false});
+  }).filter(function(r){return r&&!tmv3_step2PreInspectionNonCustomer_(r)&&r.status!=='cancelled';});
+  const seen={};
+  records.forEach(function(r){
+    if(!r.eventId||seen[r.eventId])throw new Error('PI_PRIMARY_EVENT_ID_DUPLICATE_OR_BLANK');
+    seen[r.eventId]=true;
+  });
+  // This helper remains authoritative-only. Cross-calendar discovery is
+  // published by tmv3_piCalendarReviewRefresh_, never silently imported.
+  return records.sort(function(a,b){return new Date(a.start)-new Date(b.start);});
 }
 
-// Original: 60_Automation; Function: tmv3_preInspectionPromoteCandidate_
 function tmv3_preInspectionPromoteCandidate_(record) {
-  if(tmv3_preInspectionApprovalHold_(record&&record.eventId))return {status:'APPROVED_INTAKE_EXTERNAL_IMPORT_ONLY_NO_INVITES',record:record};
-  if (record.calendarRole !== 'SECONDARY_STEPHEN') return {status:'PRIMARY',record:record};
-  if (!tmv3_preInspectionExplicitCandidate_(record)) throw new Error('NOT_EXPLICIT_PREINSPECTION');
-  if (!tmv3_preInspectionCreatorEmail_(record)) throw new Error('CREATOR_MISSING_OR_AMBIGUOUS_NO_INTAKE_WRITE');
-  tmv3_assertOperationWrite_('PREINSPECTIONAUTO','PREINSPECTION_INTAKE');
-  const cfg = TMV3.VERTICALS.PreInspection;
-  const primary = CalendarApp.getCalendarById(cfg.primaryCalendarId);
-  if (!primary) throw new Error('CF Preinspects unavailable.');
-  const existing = tmv3_findCalendarEventById_(cfg.primaryCalendarId,record.eventId);
-  if (existing && existing.event) return {status:'PRIMARY',record:
-    tmv3_calendarEvent_('PreInspection',cfg,tmv3_verticalCalendars_('PreInspection',cfg)[0],existing.event)};
-  const duplicates = primary.getEvents(new Date(record.start),new Date(record.end)).filter(function(event) {
-    return event.getId() !== record.eventId &&
-      event.getStartTime().getTime() === new Date(record.start).getTime() &&
-      event.getEndTime().getTime() === new Date(record.end).getTime() &&
-      tmv3_phone10_(tmv3_extractPhone_(event.getTitle())) === tmv3_phone10_(record.phone) &&
-      !!tmv3_phone10_(record.phone) && tmv3_norm_(event.getLocation()) === tmv3_norm_(record.location);
-  });
-  if (duplicates.length) throw new Error('POSSIBLE_DUPLICATE_CF_EVENT_NO_INTAKE_WRITE');
-  const source = tmv3_findCalendarEventById_(record.calendarId,record.eventId);
-  if (!source || !source.event) throw new Error('Stephen source event disappeared.');
-  const freshSource=tmv3_calendarEvent_('PreInspection',cfg,{calendarId:record.calendarId,calendarName:'Stephen',role:'SECONDARY_STEPHEN'},source.event,{applyEligibility:false});
-  const freshClassification=tmv3_preInspectionClassifyLikely_(freshSource,cfg,true);
-  if(freshClassification.status!=='EXPLICIT_PREINSPECTION') throw new Error('SOURCE_INTENT_OR_CREATOR_NOT_AUTHORIZED_NO_INTAKE_WRITE');
-  if(freshSource.fingerprint!==record.fingerprint) throw new Error('SOURCE_CHANGED_NO_INTAKE_WRITE');
-  if(freshClassification.reason==='VERIFIED_QUOTED_ORDER_LIKELY_PREINSPECTION' && freshClassification.orders.length===1)PropertiesService.getScriptProperties().setProperty('TMV3_PI_INFERRED_'+tmv3_hash_(record.eventId),JSON.stringify(freshClassification.orders[0]));
-  const guests = source.event.getGuestList(true).map(function(g) {return tmv3_normEmail_(g.getEmail());});
-  [cfg.primaryCalendarId,cfg.secondaryOwnerEmail].forEach(function(email) {
-    if (guests.indexOf(tmv3_normEmail_(email)) < 0) source.event.addGuest(email);
-  });
-  const after = source.event.getGuestList(true).map(function(g) {return tmv3_normEmail_(g.getEmail());});
-  if (after.indexOf(tmv3_normEmail_(cfg.primaryCalendarId)) < 0 ||
-      after.indexOf(tmv3_normEmail_(cfg.secondaryOwnerEmail)) < 0) throw new Error('INTAKE_GUEST_READBACK_FAILED');
-  // Calendar propagation is asynchronous; no task writes until CF copy exists.
-  const promoted = tmv3_findCalendarEventById_(cfg.primaryCalendarId,record.eventId);
-  return promoted && promoted.event ? {status:'PRIMARY',record:
-    tmv3_calendarEvent_('PreInspection',cfg,tmv3_verticalCalendars_('PreInspection',cfg)[0],promoted.event)}
-    : {status:'WAITING_FOR_CF_COPY',record:record};
+  if(!record||record.vertical!=='PreInspection')throw new Error('PI_EVENT_REQUIRED');
+  if(tmv3_preInspectionApprovalHold_(record.eventId))return {
+    status:'OPERATOR_INTAKE_HOLD',record:record,calendarWrites:0,guestInvites:0};
+  if(record.calendarRole==='PRIMARY_SHARED' &&
+      String(record.calendarId)===String(TMV3.VERTICALS.PreInspection.primaryCalendarId))
+    return {status:'PRIMARY',record:record,calendarWrites:0,guestInvites:0};
+  // Private calendar candidates are DISCOVERY ONLY. A quoted order, phone,
+  // address, or creator cannot by itself authorize Calendar sharing.
+  return {status:'SECONDARY_REVIEW_ONLY',record:record,calendarWrites:0,guestInvites:0};
 }
 
-// Original: 60_Automation; Function: tmv3_preInspectionNotificationDateParts_
 function tmv3_preInspectionNotificationDateParts_(value) {
   const date=new Date(value);
   if (!isFinite(date.getTime())) return null;
@@ -2746,6 +1910,17 @@ function tmv3_preInspectionNotificationDecision_(record,state,nowValue) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionSendMissingDetails_
 function tmv3_preInspectionSendMissingDetails_(record) {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_EMAILS_DISABLED_PENDING_RELEASE',sent:0};
+  tmv3_piAssertLockedStandard_();
+  if(!record||record.vertical!=='PreInspection'||record.calendarRole!=='PRIMARY_SHARED'||
+     String(record.calendarId)!==String(TMV3.VERTICALS.PreInspection.primaryCalendarId))
+    return {status:'NONAUTHORITATIVE_SOURCE_NO_SEND',sent:0};
+  if(tmv3_preInspectionApprovalHold_(record.eventId))
+    return {status:'OPERATOR_APPROVAL_HOLD_NO_SEND',sent:0};
+  return tmv3_piSendMissingDetailsAfterRelease_(record);
+}
+
+function tmv3_piSendMissingDetailsAfterRelease_(record) {
   tmv3_piAssertLockedStandard_();
   if(tmv3_preInspectionApprovalHold_(record&&record.eventId))return {status:'APPROVAL_NOTIFICATION_HOLD',sent:0};
   const assessment=tmv3_preInspectionMissingDetailAssessment_(record);
@@ -2782,6 +1957,7 @@ function tmv3_preInspectionSendMissingDetails_(record) {
 }
 
 // Original: 60_Automation; Function: tmv3_preInspectionSweepKey_
+
 function tmv3_preInspectionSweepKey_(record) {
   const start = new Date(record.start);
   if (!isFinite(start.getTime())) throw new Error('PREINSPECTION_SWEEP_INVALID_START');
@@ -2802,6 +1978,13 @@ function tmv3_preInspectionTargetedIntake_(eventId,props) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionAutomationCycle_
 function tmv3_preInspectionAutomationCycle_(options) {
+  options=options||{};
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED) {
+    return {status:'PI_STAGING_RELEASE_GATE_NO_BUSINESS_WRITES',
+      eventId:options.eventId||'',processed:0,writes:0,notifications:0,
+      nextAction:'RUN_PI_CLEANED_VALIDATION_AND_VERIFY_FULL_V3_DEPENDENCIES'};
+  }
+
   tmv3_piAssertLockedStandard_();
   options = options || {};
   if (!tmv3_operationWritesEnabled_('PREINSPECTIONAUTO')) return {status:'PREINSPECTION_GATED',writes:0};
@@ -2925,6 +2108,15 @@ function tmv3_preInspectionAutomationCycle_(options) {
           }
           if (plans.length !== 1) throw new Error('MULTIPLE_CANONICAL_PLANS_NO_WRITE');
           const plan = plans[0];
+           if (!plan.blocker && Array.isArray(plan.actions) &&
+               plan.actions.indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)>=0)
+             throw new Error('PI_AUTOMATIC_RECREATE_DISABLED_REVIEW_HISTORY_FIRST');
+           // Before any Task mutation, enforce the verified Calendar-owner
+           // Employee as Requested By. Link verification alone does not patch Task.
+           if (!plan.blocker && Array.isArray(plan.actions) &&
+               plan.actions.some(function(action){
+                 return action!==TMV3_STEP7_ACTION.VERIFY_CALENDAR_LINKS;
+               })) tmv3_piAssertRequestedByPlan_(plan,record);
           if(!plan.blocker && plan.actions.some(function(a){return a===TMV3_STEP7_ACTION.CREATE_TASK || a===TMV3_STEP7_ACTION.RECREATE_TASK;}))one.orderStatusBeforeCreate=tmv3_preInspectionOrderBeforeCreate_(record,plan);
           one.plan=plan.plan;one.blocker=plan.blocker || '';one.taskId=plan.taskId || '';
           // Preserve the single business-write transaction cap. Do not
@@ -3013,6 +2205,11 @@ function tmv3_preInspectionAutomationCycle_(options) {
 
 // Original: 60_Automation; Function: tmv3_runPreInspectionAutomation
 function tmv3_runPreInspectionAutomation() {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_runPreInspectionAutomation();
+}
+
+function tmv3_piOriginal_runPreInspectionAutomation() {
   const sheetRefreshStarted=Date.now();
   const result=tmv3_preInspectionAutomationCycle_({force:true,reason:'MANUAL_KICK'});
   result.sheetRefresh=tmv3_refreshAutomationSheetsAfter_(sheetRefreshStarted);
@@ -3167,6 +2364,11 @@ function tmv3_preInspectionScheduleNextSweep_() {
 
 // Original: 60_Automation; Function: tmv3_preInspectionClearContinuationTrigger_
 function tmv3_preInspectionClearContinuationTrigger_() {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_preInspectionClearContinuationTrigger_();
+}
+
+function tmv3_piOriginal_preInspectionClearContinuationTrigger_() {
   ScriptApp.getProjectTriggers().forEach(function(t) {
     if (t.getHandlerFunction()==='tmv3_preInspectionContinueEligibleSweep') {
       ScriptApp.deleteTrigger(t);
@@ -3224,6 +2426,11 @@ function tmv3_preInspectionContinueEligibleSweep() {
 
 // Original: 60_Automation; Function: tmv3_runPreInspectionDailySlot_
 function tmv3_runPreInspectionDailySlot_(slot) {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_runPreInspectionDailySlot_(slot);
+}
+
+function tmv3_piOriginal_runPreInspectionDailySlot_(slot) {
   tmv3_piAssertLockedStandard_();
   const sheetRefreshStarted=Date.now();
   // Report-only Calendar synchronization; failure preserves last-good view and never blocks Striven work.
@@ -3271,7 +2478,12 @@ function tmv3_runPreInspectionDailySlot_(slot) {
 }
 
 // Original: 60_Automation; Function: tmv3_installPreInspectionAutomationTrigger
-function tmv3_installPreInspectionAutomationTrigger() { return tmv3_installStandardDailyTriggers(); }
+function tmv3_installPreInspectionAutomationTrigger() {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_installPreInspectionAutomationTrigger();
+}
+
+function tmv3_piOriginal_installPreInspectionAutomationTrigger() { return tmv3_installStandardDailyTriggers(); }
 
 // Original: 60_Automation; Function: tmv3_preInspectionFreshHistoryBeforeCreate_
 function tmv3_preInspectionFreshHistoryBeforeCreate_(record,plan) {
@@ -3308,6 +2520,7 @@ function tmv3_preInspectionRecoveryRecord_(eventId) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionFailureAlert_
 function tmv3_preInspectionFailureAlert_(eventId,error) {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_FAILURE_EMAIL_DISABLED_PENDING_RELEASE',sent:0};
   if (TMV3.MODE!=='PRODUCTION_WRITE' || TMV3.OPERATIONS.preInspectionFailureAlertsEnabled!==true) return {status:'ALERT_GATED'};
   const day=Utilities.formatDate(new Date(),TMV3_TIMEZONE,'yyyy-MM-dd');
   const key='TMV3_PI_FAILURE_'+tmv3_hash_(day+'|'+eventId+'|'+error);
@@ -3334,79 +2547,35 @@ function tmv3_preInspectionFailureAlert_(eventId,error) {
 
 // Original: 60_Automation; Function: tmv3_restorePreInspectionLegacyTitle_
 function tmv3_restorePreInspectionLegacyTitle_(record) {
-  if(tmv3_preInspectionApprovalHold_(record&&record.eventId))return {status:'APPROVAL_TITLE_HOLD',writes:0};
-  tmv3_assertOperationWrite_('PREINSPECTIONAUTO','PRESERVE_LEGACY_TITLE');
-  if (!record || record.vertical!=='PreInspection') throw new Error('PreInspection event required.');
-  const cfg=TMV3.VERTICALS.PreInspection;
-  const state=tmv3_titleMigrationStateForEvent_('PreInspection',record.eventId,cfg.primaryCalendarId);
-  let legacy=state.preservedTitle;
-  const copies=tmv3_requiredCalendarCopiesForEvent_(record).map(function(id){
-    const found=tmv3_findEventCopyRobust_(id,record.eventId);
-    if (!found || !found.event) throw new Error('LEGACY_TITLE_REPAIR_MISSING_COPY: '+id);
-    return {calendarId:id,event:found.event};
-  });
-  if (!legacy) {
-    const primary=copies.filter(function(copy){return copy.calendarId===cfg.primaryCalendarId;})[0];
-    const canonical=primary && String(primary.event.getTitle() || '');
-    const oldTitles=tmv3_unique_(copies.map(function(copy){return String(copy.event.getTitle() || '');}).filter(function(title){return title && title!==canonical;}));
-    if (/^\d+ - .+ - \(\d{3}\) \d{3}-\d{4}$/.test(canonical) && oldTitles.length===1) {
-      legacy=oldTitles[0];
-      tmv3_recordTitleMigrationState_('PreInspection',record.eventId,cfg.primaryCalendarId,legacy,canonical);
-    } else if (oldTitles.length>1) throw new Error('AMBIGUOUS_PREVIOUS_COPY_TITLES_NO_OVERWRITE');
-    else return {status:'NO_RECORDED_LEGACY_TITLE',eventId:record.eventId,writes:0};
-  }
-  let writes=0;
-  copies.forEach(function(copy){
-    const before=String(copy.event.getDescription() || '');
-    const desired=tmv3_preInspectionEnsureLegacyTitle_(before,legacy);
-    if (desired!==before) {copy.event.setDescription(desired);writes++;}
-    const found=tmv3_findEventCopyRobust_(copy.calendarId,record.eventId);
-    if (!found || !found.event || String(found.event.getDescription() || '')!==desired) {
-      throw new Error('LEGACY_TITLE_REPAIR_READBACK_FAILED: '+copy.calendarId);
-    }
-  });
-  return {status:'LEGACY_TITLE_VERIFIED',eventId:record.eventId,legacyTitle:legacy,writes:writes};
+  // Automatic title-history reconstruction was unsafe: it wrote to every
+  // Calendar copy before a stable original-title proof was always available.
+  return {status:'PI_TITLE_HISTORY_READ_ONLY_REQUIRE_APPROVAL',
+    eventId:record&&record.eventId||'',writes:0};
 }
 
-// Original: 60_Automation; Function: tmv3_restoreRecordedPreInspectionLegacyTitles
 function tmv3_restoreRecordedPreInspectionLegacyTitles() {
-  const lock=LockService.getScriptLock();
-  if (!lock.tryLock(30000)) return {status:'LOCK_BUSY',writes:0};
-  try {
-    const states=tmv3_titleMigrationStateIndex_();
-    const result={status:'COMPLETE',writes:0,results:[]};
-    Object.keys(states).filter(function(key){return key.indexOf('PreInspection|')===0;}).forEach(function(key){
-      const id=key.slice('PreInspection|'.length);
-      const row=states[key];
-      if (!tmv3_clean_(row['Title Migration Map'])) return;
-      try {
-        const record=tmv3_preInspectionRecoveryRecord_(id);
-        const one=tmv3_restorePreInspectionLegacyTitle_(record);
-        result.results.push(one);result.writes+=one.writes;
-      } catch(err) {result.status='ATTENTION';result.results.push({eventId:id,error:String(err)});}
-    });
-    Logger.log(JSON.stringify(result));return result;
-  } finally {lock.releaseLock();}
+  return {status:'RETIRED_BULK_TITLE_MUTATION_NO_WRITE',writes:0};
 }
 
-// Original: 60_Automation; Function: tmv3_preInspectionCompletionVerified_
-function tmv3_preInspectionCompletionVerified_(plans, execution) {
-  if (!Array.isArray(plans) || plans.length !== 1) return false;
-  const plan = plans[0];
-  if (tmv3_preInspectionHistoricalCoverageVerified_(plan)) return true;
-  if (!plan || plan.blocker || !Array.isArray(plan.actions)) return false;
-  if (plan.actions.length === 0) return true;
-  if (plan.plan !== 'NO_CHANGE' || plan.actions.some(function(action) {
-    return action !== TMV3_STEP7_ACTION.VERIFY_CALENDAR_LINKS;
-  })) return false;
-  return !!(execution &&
-    ['VERIFIED_CONVERGENCE','CREATED_VERIFIED_AND_CONVERGED'].indexOf(execution.status) >= 0 &&
-    execution.calendarLinks &&
-    execution.calendarLinks.status === 'CALENDAR_LINKS_VERIFIED');
+function tmv3_preInspectionCompletionVerified_(plans,execution) {
+  if(!Array.isArray(plans)||plans.length!==1)return false;
+  const p=plans[0];
+  if(tmv3_preInspectionHistoricalCoverageVerified_(p))return true;
+  if(!p||p.blocker||!Array.isArray(p.actions)||p.actions.length!==0||
+     p.plan!=='NO_CHANGE'||p.readStatus!=='FRESH_TASK_GET'||
+     !/^[1-9]\d*$/.test(String(p.taskId||'')))return false;
+  // Cache-only/no-change plans must not be certified as fully converged.
+  const checks=['customerCheck','locationCheck','requestedByCheck',
+    'startCheck','endCheck','assignmentCheck','calendarTitleCheck','taskNameCheck'];
+  return checks.every(function(key){return p[key]==='MATCH';});
 }
 
-// Original: 60_Automation; Function: tmv3_preInspectionAutomaticRecovery_
 function tmv3_preInspectionAutomaticRecovery_(reason) {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_preInspectionAutomaticRecovery_(reason);
+}
+
+function tmv3_piOriginal_preInspectionAutomaticRecovery_(reason) {
   const hour=Number(Utilities.formatDate(new Date(),TMV3_TIMEZONE,'H'));
   if(hour<8||hour>18) return {status:'OUTSIDE_PREINSPECTION_RECOVERY_HOURS',writes:0};
   const props=PropertiesService.getScriptProperties();
@@ -3425,22 +2594,30 @@ function tmv3_preInspectionAutomaticRecovery_(reason) {
 
 // Original: 60_Automation; Function: tmv3_preInspectionHistoricalCoverageVerified_
 function tmv3_preInspectionHistoricalCoverageVerified_(plan) {
-  if (!plan || plan.vertical !== 'PreInspection' ||
-      plan.disposition !== 'FULFILLED_NO_RECREATE' ||
-      plan.plan !== 'VERIFY_ONLY_HISTORY_NO_WRITE' ||
-      plan.readStatus !== 'FRESH_TASK_GET' ||
-      !/^[1-9]\d*$/.test(String(plan.taskId || '')) ||
-      !Array.isArray(plan.actions) || plan.actions.length !== 0 ||
-      !tmv3_step6IsFulfilledStatus_(plan.taskStatus) ||
-      plan.customerCheck !== 'MATCH' ||
-      !/^[1-9]\d*$/.test(String(plan.expectedCustomerId || '')) ||
-      String(plan.expectedCustomerId) !== String(plan.actualCustomerId)) return false;
-  return tmv3_step6TaskTouchesEventDay_({start:plan.calendarStart},
+  if(!plan||plan.vertical!=='PreInspection'||
+     plan.disposition!=='FULFILLED_NO_RECREATE'||
+     plan.plan!=='VERIFY_ONLY_HISTORY_NO_WRITE'||
+     plan.readStatus!=='FRESH_TASK_GET'||
+     !/^[1-9]\d*$/.test(String(plan.taskId||''))||
+     !Array.isArray(plan.actions)||plan.actions.length!==0||
+     !tmv3_step6IsFulfilledStatus_(plan.taskStatus)||
+     plan.customerCheck!=='MATCH'||
+     String(plan.expectedCustomerId)!==String(plan.actualCustomerId))return false;
+  // Completed Task by itself does not establish that THIS Calendar event was
+  // fulfilled. A verified link or exact site/date agreement is also needed.
+  const exactLink=String(plan.existingTaskId||plan.calendarTaskId||'')===String(plan.taskId);
+  const sameSite=plan.locationCheck==='MATCH' && plan.calendarTitleCheck!=='CONFLICT';
+  const day=tmv3_step6TaskTouchesEventDay_({start:plan.calendarStart},
     {Start:plan.taskStart,Due:plan.taskDue});
+  return !!day && sameSite && (exactLink||plan.customerCheck==='MATCH');
 }
 
-// Original: 60_Automation; Function: tmv3_reconcilePreInspectionPendingReview
 function tmv3_reconcilePreInspectionPendingReview() {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED)return {status:'PI_STAGING_OPERATOR_PATH_DISABLED',writes:0,emailsSent:0,guestInvites:0};
+  return tmv3_piOriginal_reconcilePreInspectionPendingReview();
+}
+
+function tmv3_piOriginal_reconcilePreInspectionPendingReview() {
   const lock=LockService.getScriptLock();
   if (!lock.tryLock(1000)) return {status:'LOCK_BUSY',businessWrites:0};
   try {
@@ -3543,85 +2720,10 @@ function tmv3_preInspectionTodayEligibleQueue_(records, sheetRows) {
 }
 
 // Original: 90_Admin; Function: tmv3_preInspectionTodayRunNext
-function tmv3_preInspectionTodayRunNext(excludeEventIds,targetDate) {
-  const before=tmv3_strivenApiBudgetStatus_();
-  if (before.exhausted || !Number.isFinite(before.remaining) || before.remaining<100) {
-    const gated={status:'API_BUDGET_GATED',remaining:before.remaining,
-      reason:'Minimum 100-call readback headroom is required before another event transaction.'};
-    Logger.log(JSON.stringify(gated));return gated;
-  }
-  const records=tmv3_preInspectionTodayRecords_(targetDate);
-  const sheet=tmv3_sheet_(TMV3.SHEETS.PREINSPECTION);
-  const last=sheet.getLastRow();
-  const rows=last>1?sheet.getRange(2,6,last-1,10).getDisplayValues():[];
-  const queue=tmv3_preInspectionTodayEligibleQueue_(records,rows);
-  const skipIds={};
-  (Array.isArray(excludeEventIds)?excludeEventIds:[]).forEach(function(id){skipIds[String(id)]=true;});
-  if (!queue.eligible.length) {
-    const empty={status:'NO_ELIGIBLE_EVENTS',events:records.length,excluded:queue.excluded,strivenCalls:0};
-    Logger.log(JSON.stringify(empty));return empty;
-  }
-  const props=PropertiesService.getScriptProperties();
-  const day=targetDate || Utilities.formatDate(new Date(),TMV3_TIMEZONE,'yyyy-MM-dd');
-  const key='TMV3_PI_ELIGIBLE_CURSOR_'+day;
-  const cursor=Array.isArray(excludeEventIds)&&excludeEventIds.length
-    ? 0 : Number(props.getProperty(key)||0);
-  let recent=0;
-  for(let i=0;i<queue.eligible.length;i++){
-    const index=(cursor+i)%queue.eligible.length;
-    const candidate=queue.eligible[index],record=candidate.record;
-    if (skipIds[record.eventId]) continue;
-    const done=JSON.parse(props.getProperty('TMV3_PI_DONE_'+tmv3_hash_(record.eventId))||'null');
-    if (done && done.fingerprint===record.fingerprint &&
-        Date.now()-Number(done.at||0)<3600000){recent++;continue;}
-    // Advance even for blocked events; do not retry the same blocker forever.
-    props.setProperty(key,String((index+1)%queue.eligible.length));
-    const result=tmv3_preInspectionAutomationCycle_({
-      force:true,eventId:record.eventId,reason:'TODAY_ELIGIBLE_SINGLE_EVENT'});
-    const one=(result.results||[]).filter(function(r){
-      return r.eventId===record.eventId;
-    })[0]||{};
-    const after=one.afterPlans||[];
-    const taskId=tmv3_clean_(one.taskId||
-      (one.execution&&one.execution.taskId)||
-      (after[0]&&after[0].taskId));
-    const complete=result.status==='COMPLETE'&&!!taskId&&
-      tmv3_preInspectionCompletionVerified_(after,one.execution);
-    const response={
-      status:complete?'EVENT_RECONCILED_AND_VERIFIED':'EVENT_NOT_CONVERGED',
-      eventId:record.eventId,title:record.title,
-      candidate: candidate.disposition,taskId:taskId,
-      processingStatus:result.status,
-      executionStatus:one.execution&&one.execution.status||'NO_EXECUTION',
-      after:after,optionalOrderEvidence:one.optionalOrderEvidence||null,
-      blocker:one.blocker||'',error:one.error||result.error||'',
-      before:before.count,afterCalls:tmv3_strivenApiBudgetStatus_().count,
-      excluded:queue.excluded
-    };
-    Logger.log(JSON.stringify(response));return response;
-  }
-  const doneResult={status:'ALL_ELIGIBLE_RECENTLY_VERIFIED',
-    events:queue.eligible.length,recent:recent,excluded:queue.excluded,strivenCalls:0};
-  Logger.log(JSON.stringify(doneResult));return doneResult;
-}
+function tmv3_preInspectionTodayRunNext() { return {status:'RETIRED_OPERATOR_SINGLE_EVENT_WRITE_USE_APPROVED_CYCLE',writes:0,emailsSent:0,guestInvites:0}; }
 
-// Original: 90_Admin; Function: tmv3_preInspectionTodayRunEligibleBatch
-function tmv3_preInspectionTodayRunEligibleBatch() {
-  const results=[],seen={};
-  for(let i=0;i<3;i++){
-    const r=tmv3_preInspectionTodayRunNext(Object.keys(seen));
-    if (!r.eventId){if (!results.length) results.push(r);break;}
-    if (seen[r.eventId]){results.push({status:'CURSOR_DID_NOT_ADVANCE',eventId:r.eventId});break;}
-    seen[r.eventId]=true;
-    results.push(r);
-  }
-  const verified=results.filter(function(r){return r.status==='EVENT_RECONCILED_AND_VERIFIED';}).length;
-  const result={status:verified===results.length?'ALL_SELECTED_VERIFIED':'PARTIAL_OR_BLOCKED',
-    verified:verified,attempted:results.length,results:results};
-  Logger.log(JSON.stringify(result));return result;
-}
+function tmv3_preInspectionTodayRunEligibleBatch() { return {status:'RETIRED_OPERATOR_BATCH_WRITE_USE_APPROVED_CYCLE',writes:0,emailsSent:0,guestInvites:0}; }
 
-// Original: 90_Admin; Function: tmv3_preInspectionTodayLocationEvidence
 function tmv3_preInspectionTodayLocationEvidence() {
   const before=tmv3_strivenApiBudgetStatus_();
   if (before.exhausted || !Number.isFinite(before.remaining) || before.remaining<100) throw new Error('INSUFFICIENT_READBACK_HEADROOM');
@@ -3632,32 +2734,8 @@ function tmv3_preInspectionTodayLocationEvidence() {
 }
 
 // Original: 90_Admin; Function: tmv3_preInspectionTodayRunUnlinked
-function tmv3_preInspectionTodayRunUnlinked() {
-  const before=tmv3_strivenApiBudgetStatus_();
-  if (before.exhausted || !Number.isFinite(before.remaining) || before.remaining<100) throw new Error('INSUFFICIENT_READBACK_HEADROOM');
-  const records=tmv3_preInspectionTodayRecords_();
-  const rows=tmv3_sheet_(TMV3.SHEETS.PREINSPECTION).getDataRange().getDisplayValues().slice(1);
-  const props=PropertiesService.getScriptProperties();
-  const candidates=records.map(function(record){
-    const matches=rows.filter(function(row){return row[14]===record.eventId;});
-    if(matches.length!==1 || matches[0][24]) return null;
-    const done=JSON.parse(props.getProperty('TMV3_PI_DONE_'+tmv3_hash_(record.eventId))||'null');
-    if(done && done.fingerprint===record.fingerprint && Date.now()-Number(done.at||0)<3600000) return null;
-    return {record:record,priority:/CREATE_TASK/.test(matches[0][9])?0:1};
-  }).filter(Boolean).sort(function(a,b){return a.priority-b.priority || new Date(a.record.start)-new Date(b.record.start);});
-  if(!candidates.length){Logger.log(JSON.stringify({status:'NO_UNLINKED_EVENTS',strivenCalls:0}));return;}
-  const record=candidates[0].record;
-  const result=tmv3_preInspectionAutomationCycle_({force:true,eventId:record.eventId,reason:'TODAY_UNLINKED_EVENT'});
-  const one=(result.results||[])[0]||{},execution=one.execution||{};
-  Logger.log(JSON.stringify({status:result.status,eventId:record.eventId,title:record.title,
-    taskId:execution.taskId||one.taskId||'',executionStatus:execution.status||'NO_EXECUTION',
-    after:one.afterPlans||[],checks:execution.readbackPlan?tmv3_preInspectionCompactPlan_(execution.readbackPlan):null,
-    optionalOrderEvidence:one.optionalOrderEvidence||null,error:one.error||result.error||'',
-    before:before.count,afterCalls:tmv3_strivenApiBudgetStatus_().count}));
-  return result;
-}
+function tmv3_preInspectionTodayRunUnlinked() { return {status:'RETIRED_UNLINKED_REPAIR_USE_APPROVED_CYCLE',writes:0,emailsSent:0,guestInvites:0}; }
 
-// Original: 90_Admin; Function: tmv3_preInspectionTodayLocationResponseShape
 function tmv3_preInspectionTodayLocationResponseShape() {
   const records=tmv3_preInspectionTodayRecords_();
   const rows=tmv3_sheet_(TMV3.SHEETS.PREINSPECTION).getDataRange().getDisplayValues().slice(1);
@@ -3675,42 +2753,15 @@ function tmv3_preInspectionTodayLocationResponseShape() {
 }
 
 // Original: 90_Admin; Function: tmv3_preInspectionTodayRefreshTaskCacheSchedules
-function tmv3_preInspectionTodayRefreshTaskCacheSchedules(targetDate) {
-  const before=tmv3_strivenApiBudgetStatus_();
-  if(before.exhausted || !Number.isFinite(before.remaining) || before.remaining<100) throw new Error('INSUFFICIENT_READBACK_HEADROOM');
-  const records=tmv3_preInspectionTodayRecords_(targetDate),rows=tmv3_sheet_(TMV3.SHEETS.PREINSPECTION).getDataRange().getDisplayValues().slice(1);
-  const results=[],cachedTasks=tmv3_rows_(TMV3.SHEETS.TASKS);
-  records.forEach(function(record){
-    const matches=rows.filter(function(row){return row[14]===record.eventId;});
-    if(matches.length!==1) return;
-    const found=String(matches[0][24]||'').match(/[?&]TaskID=([1-9][0-9]*)/i);
-    const id=tmv3_clean_(record.existingTaskId||record.taskNumber||(found&&found[1]));
-    if(!/^[1-9][0-9]*$/.test(id)) return;
-    if(found && found[1]!==id) throw new Error('TASK_LINK_CACHE_CONFLICT');
-    const cached=cachedTasks.filter(function(task){return String(task['Task ID'])===id;});
-    if(cached.length>1) throw new Error('DUPLICATE_TASK_CACHE_ROWS');
-    if(cached.length===1 && tmv3_sameMinute_(record.start,cached[0].Start) && tmv3_sameMinute_(record.end,cached[0].Due)) {
-      results.push({taskId:id,status:'ALREADY_CACHED_MATCH'});return;
-    }
-    const task=tmv3_getTaskById_(Number(id));
-    if(Number(task['Task Type ID'])!==105 || String(task['Task ID'])!==id) throw new Error('PI_TASK_CACHE_IDENTITY_UNVERIFIED');
-    tmv3_upsertTaskCacheRow_(task);
-    results.push({taskId:id,status:'CANONICAL_V1_SCHEDULE_CACHED'});
-  });
-  tmv3_step6TaskDecisionRunCached('PREINSPECTION_CANONICAL_CACHE_READBACK');
-  Logger.log(JSON.stringify({results:results,before:before.count,afterCalls:tmv3_strivenApiBudgetStatus_().count,strivenWrites:0}));
-}
+function tmv3_preInspectionTodayRefreshTaskCacheSchedules() { return {status:'RETIRED_CACHE_SCHEDULE_REWRITE',writes:0,emailsSent:0,guestInvites:0}; }
 
-// Original: 90_Admin; Function: tmv3_preInspectionOct21Preview
 function tmv3_preInspectionOct21Preview() { return tmv3_preInspectionTodayPreview("2026-10-21"); }
 
 // Original: 90_Admin; Function: tmv3_preInspectionOct21RunNext
-function tmv3_preInspectionOct21RunNext() { return tmv3_preInspectionTodayRunNext([],"2026-10-21"); }
+function tmv3_preInspectionOct21RunNext() { return {status:'RETIRED_HISTORIC_OCT21_WRITE',writes:0,emailsSent:0,guestInvites:0}; }
 
-// Original: 90_Admin; Function: tmv3_preInspectionOct21RefreshCache
-function tmv3_preInspectionOct21RefreshCache() { return tmv3_preInspectionTodayRefreshTaskCacheSchedules("2026-10-21"); }
+function tmv3_preInspectionOct21RefreshCache() { return {status:'RETIRED_HISTORIC_OCT21_CACHE',writes:0,emailsSent:0,guestInvites:0}; }
 
-// Original: 90_Admin; Function: tmv3_preInspectionLastWeekAudit
 function tmv3_preInspectionLastWeekAudit() {
   const before=tmv3_strivenApiBudgetStatus_();
   if(before.exhausted || !Number.isFinite(before.remaining) || before.remaining<100) throw new Error('INSUFFICIENT_READBACK_HEADROOM');
@@ -3991,183 +3042,10 @@ function tmv3_preInspectionCalendarReviewRefresh() {
  * Explicit 2-event scope, fresh Task history guard, one existing transaction per event,
  * no force recreation, stop on uncertain outcome. Remove after acceptance.
  */
-function tmv3_preInspectionRepairNov9Stephen() {
-  const today=Utilities.formatDate(new Date(),TMV3_TIMEZONE,'yyyy-MM-dd');
-  if(today!=='2026-11-09')return {status:'DATE_GUARD_NO_WRITES',today:today};
-  const targets=[
-    {id:'1h35gn1jffpmllhof1467gi00a@google.com',number:'63199',name:'Stephanie & Kyle Tomlin'},
-    {id:'3n8bshit4qn9mfjtahdbivk94u@google.com',number:'63202',name:'Emilie & John Stamers'}
-  ];
-  const out={status:'IN_PROGRESS',date:today,events:[],writesAttempted:0};
-  for(let i=0;i<targets.length;i++){
-    const t=targets[i],entry={eventId:t.id,name:t.name};
-    try{
-      const record=tmv3_preInspectionRecoveryRecord_(t.id);
-      if(record.calendarRole!=='PRIMARY_SHARED' ||
-          Utilities.formatDate(new Date(record.start),TMV3_TIMEZONE,'yyyy-MM-dd')!==today ||
-          String(record.title||'').indexOf(t.number+' - ')!==0){
-        entry.status='SOURCE_IDENTITY_CHANGED_NO_WRITE';out.events.push(entry);break;
-      }
-      const plans=tmv3_step7FreshPlansForEvent_('PreInspection',t.id);
-      if(plans.length!==1 || plans[0].blocker){
-        entry.status='FRESH_PLAN_BLOCKED_NO_WRITE';entry.plan=plans[0]?plans[0].plan:'NONE';
-        entry.blocker=plans[0]?String(plans[0].blocker||''):'NO_UNIQUE_PLAN';
-        out.events.push(entry);break;
-      }
-      const p=plans[0];
-      if(p.plan==='NO_CHANGE' && /^[1-9]\d*$/.test(String(p.taskId||''))){
-        entry.status='ALREADY_CONVERGED';entry.taskId=String(p.taskId);
-        out.events.push(entry);continue;
-      }
-      const allowed=Array.isArray(p.actions) && p.actions.indexOf(TMV3_STEP7_ACTION.CREATE_TASK)>=0 &&
-        p.actions.indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)<0 &&
-        !p.taskId;
-      if(!allowed){
-        entry.status='NOT_SAFE_CREATE_PLAN';entry.plan=p.plan;
-        out.events.push(entry);break;
-      }
-      out.writesAttempted++;
-      // Existing cycle rechecks live Striven task history immediately before create.
-      // It also guards the write with the canonical event lock and readback.
-      const run=tmv3_preInspectionAutomationCycle_({force:true,eventId:t.id,reason:'NOV9_STEPPHEN_TARGETED_VERIFIED_CREATE'});
-      const one=(run.results||[]).filter(function(x){return x.eventId===t.id;})[0];
-      entry.cycleStatus=run.status;
-      entry.executionStatus=one&&one.execution&&one.execution.status||'NO_VERIFIED_EXECUTION';
-      if(!one || run.status!=='COMPLETE'){
-        entry.status='UNCERTAIN_STOP_REVIEW_BEFORE_RETRY';
-        entry.reason=String(one&&one.blocker||one&&one.error||run.error||'').slice(0,350);
-        out.events.push(entry);break;
-      }
-      const fresh=tmv3_step7FreshPlansForEvent_('PreInspection',t.id);
-      entry.taskId=fresh.length===1?String(fresh[0].taskId||''):'';
-      entry.status=fresh.length===1 && /^[1-9]\d*$/.test(entry.taskId) &&
-        tmv3_preInspectionCompletionVerified_(fresh,one.execution)
-        ?'TASK_CREATED_AND_READBACK_VERIFIED':'INCOMPLETE_STOP_REVIEW_BEFORE_RETRY';
-      out.events.push(entry);
-      if(entry.status!=='TASK_CREATED_AND_READBACK_VERIFIED')break;
-    }catch(error){
-      entry.status='ERROR_STOP_REVIEW_BEFORE_RETRY';
-      entry.reason=String(error&&error.message||error).slice(0,400);
-      out.events.push(entry);break;
-    }
-  }
-  out.status=out.events.length===targets.length &&
-    out.events.every(function(x){return x.status==='ALREADY_CONVERGED'||x.status==='TASK_CREATED_AND_READBACK_VERIFIED';})
-    ?'TWO_TARGETS_VERIFIED':'PARTIAL_ATTENTION';
-  Logger.log('PI_NOV9_TARGETED_REPAIR='+JSON.stringify(out));
-  return out;
-}
+function tmv3_preInspectionRepairNov9Stephen() { return {status:'RETIRED_HISTORIC_NOV9_WRITE',writes:0,emailsSent:0,guestInvites:0}; }
 
+function tmv3_preInspectionRepairThreeAddedByOthersNov9() { return {status:'RETIRED_HISTORIC_NOV9_WRITE',writes:0,emailsSent:0,guestInvites:0}; }
 
-/**
- * Targeted, explicit Nov 9 three-event reconciliation.
- * Existing production V3 guards own all Striven mutations; this wrapper is
- * fail-closed, idempotent, and never sends a generic missing-details email.
- * Creator notifications must use tmv3_preInspectionMissingDetailEmailPreview_.
- */
-function tmv3_preInspectionRepairThreeAddedByOthersNov9() {
-  const today=Utilities.formatDate(new Date(),TMV3_TIMEZONE,'yyyy-MM-dd');
-  if(today!=='2026-11-09')return {status:'DATE_GUARD_NO_WRITES',today:today};
-  const cfg=TMV3.VERTICALS.PreInspection;
-  const ownerCalendar=(cfg.secondaryCalendarIds||[])[0];
-  const targets=[
-    {id:'1cmb7i5r3i16esfk2q05betmd4@google.com',number:'63196',title:'63196 - Nick Rogers - (416) 988-4212',start:'12:00'},
-    {id:'1p8inlluovcrlm1ei32mjafocr@google.com',number:'63200',title:'63200 - Laura Menard - (416) 876-4411',start:'13:00'},
-    {id:'3hv5sv78a5ub2vsmgl245llqsl@google.com',number:'63123',title:'63123 - Bill and Zena Klement - (416) 286-6700',start:'14:00'}
-  ];
-  const out={status:'IN_PROGRESS',date:today,events:[],writeCyclesAttempted:0,notificationsSent:0};
-  for(let i=0;i<targets.length;i++){
-    const t=targets[i],line={eventId:t.id,customerNumber:t.number};
-    try{
-      const record=tmv3_findFreshEventRecord_('PreInspection',t.id);
-      const start=Utilities.formatDate(new Date(record.start),TMV3_TIMEZONE,'yyyy-MM-dd HH:mm');
-      if(record.calendarRole!=='PRIMARY_SHARED'||
-         String(record.eventId)!==t.id||
-         String(record.customerNumber||'')!==t.number||
-         String(record.title)!==t.title||
-         start!==today+' '+t.start||
-         String(record.organizerCalendarId||'')!==String(ownerCalendar)||
-         !tmv3_clean_(record.location)){
-        line.status='IDENTITY_OWNER_SCHEDULE_OR_LOCATION_NOT_VERIFIED_NO_WRITE';
-        line.found={title:record.title,start:start,owner:record.organizerCalendarId,hasLocation:!!record.location};
-        out.events.push(line);break;
-      }
-      const budget=tmv3_strivenApiBudgetStatus_();
-      if(budget.exhausted||!Number.isFinite(budget.remaining)||budget.remaining<100){
-        line.status='API_READBACK_BUDGET_GATED';out.events.push(line);break;
-      }
-      const initial=tmv3_step7FreshPlansForEvent_('PreInspection',t.id);
-      if(initial.length!==1||initial[0].blocker){
-        line.status='FRESH_TASK_OR_LOCATION_REVIEW_REQUIRED';
-        line.plan=initial[0]&&initial[0].plan||'NONE';
-        line.blocker=String(initial[0]&&initial[0].blocker||'NO_UNIQUE_PLAN').slice(0,300);
-        out.events.push(line);
-        // Independent appointments continue; no Task write on this one.
-        continue;
-      }
-      const plan=initial[0];
-      if(plan.actions&&plan.actions.indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)>=0){
-        line.status='RECREATE_NOT_ALLOWED';out.events.push(line);continue;
-      }
-      const permitted=(
-        plan.plan==='NO_CHANGE'&&/^[1-9]\d*$/.test(String(plan.taskId||'')))||
-        (!plan.taskId&&Array.isArray(plan.actions)&&
-         plan.actions.indexOf(TMV3_STEP7_ACTION.CREATE_TASK)>=0);
-      if(!permitted){
-        line.status='UNSAFE_OR_UNSUPPORTED_TASK_PLAN';
-        line.plan=plan.plan;out.events.push(line);continue;
-      }
-      // Stephen's verified owner-calendar identity is anchored to each
-      // immutable Google event ID before entering the existing Striven pipeline.
-      tmv3_configurePreInspectionAssignmentOverride(t.id,t.number,ownerCalendar,15);
-      const confirmed=tmv3_step7FreshPlansForEvent_('PreInspection',t.id);
-      if(confirmed.length!==1||confirmed[0].blocker||
-         (plan.taskId&&String(confirmed[0].taskId||'')!==String(plan.taskId))){
-        line.status='ASSIGNMENT_PLAN_CHANGED_NO_WRITE';out.events.push(line);continue;
-      }
-      out.writeCyclesAttempted++;
-      const result=tmv3_preInspectionAutomationCycle_({
-        force:true,eventId:t.id,reason:'NOV9_THREE_ADDED_CONFIRMED_PI'
-      });
-      const item=(result.results||[]).filter(function(r){return r.eventId===t.id;})[0];
-      if(result.status!=='COMPLETE'||!item){
-        line.status='EXECUTION_UNCERTAIN_DO_NOT_RETRY';
-        line.cycleStatus=result.status;
-        out.events.push(line);break;
-      }
-      const finalPlans=tmv3_step7FreshPlansForEvent_('PreInspection',t.id);
-      const finalPlan=finalPlans.length===1?finalPlans[0]:null;
-      const taskId=String(finalPlan&&finalPlan.taskId||'');
-      const found=tmv3_findCalendarEventById_(cfg.primaryCalendarId,t.id);
-      const description=String(found&&found.event&&found.event.getDescription()||'');
-      line.taskId=taskId;
-      line.status=/^[1-9]\d*$/.test(taskId)&&
-        description.indexOf('TaskID='+taskId)>=0&&
-        finalPlan&&!finalPlan.blocker&&
-        tmv3_preInspectionCompletionVerified_(finalPlans,item.execution)
-        ?'TASK_AND_CALENDAR_VERIFIED':'READBACK_INCOMPLETE_DO_NOT_RETRY';
-      out.events.push(line);
-      if(line.status!=='TASK_AND_CALENDAR_VERIFIED')break;
-    }catch(error){
-      line.status='ERROR_DO_NOT_RETRY';
-      line.error=String(error&&error.message||error).slice(0,350);
-      out.events.push(line);break;
-    }
-  }
-  out.status=out.events.length===targets.length&&
-    out.events.every(function(x){return x.status==='TASK_AND_CALENDAR_VERIFIED';})
-    ?'THREE_EVENTS_VERIFIED':'PARTIAL_ATTENTION';
-  Logger.log('PI_NOV9_THREE_REPAIR='+JSON.stringify(out));
-  return out;
-}
-
-
-/**
- * Google Apps Script — read-only Striven cache, current CF Preinspects Calendar
- * and ONLY the PreInspection operator tab. This publishes a fresh Stage-6
- * projection independently of pending Install/Delivery/Service sweeps.
- * Does NOT refresh Striven source reports or mutate Striven/Calendar records.
- */
 function tmv3_preInspectionRefreshOperatorView_() {
   const lock=LockService.getScriptLock();
   if(!lock.tryLock(1500))return {status:'PI_OPERATOR_LOCK_BUSY',strivenCalls:0};
@@ -4221,110 +3099,18 @@ function tmv3_preInspectionRefreshOperatorView() {
 // Google Apps Script: approved Terry #53480 no-invitation private-copy intake.
 // This function NEVER creates or patches Striven Tasks, sends email or adds guests.
 function tmv3_terryQuietCalendarIntake_(mode) {
-  if(mode!=='PREVIEW'&&mode!=='IMPORT')throw new Error('TERRY_INTAKE_MODE_REJECTED');
-  const uid='5mafnqht16o2hrqv4232rofmm3@google.com';
-  const approved=tmv3_preInspectionApprovalHold_(uid);
-  if(!approved||approved.customerNumber!=='53480'||approved.authorizeTaskWrites!==false||
-      approved.authorizeGuestChanges!==false||approved.authorizeEmail!==false)
-    throw new Error('TERRY_APPROVAL_HOLD_NOT_VERIFIED');
-  const lock=LockService.getScriptLock();
-  if(!lock.tryLock(2000))return {status:'LOCK_BUSY',writes:0};
-  try {
-    const token=ScriptApp.getOAuthToken(),base='https://www.googleapis.com/calendar/v3/calendars/';
-    const endpoint=function(cal,path){return base+encodeURIComponent(cal)+'/events'+path;};
-    const call=function(method,url,data){
-      const options={method:method,headers:{Authorization:'Bearer '+token},
-        muteHttpExceptions:true,followRedirects:false};
-      if(data){options.contentType='application/json';options.payload=JSON.stringify(data);}
-      const response=UrlFetchApp.fetch(url,options),code=response.getResponseCode();
-      if(code<200||code>299)throw new Error('GOOGLE_CALENDAR_'+method+'_HTTP_'+code+'_NO_RETRY');
-      return JSON.parse(response.getContentText());
-    };
-    const source=approved.sourceCalendarId,target=approved.primaryCalendarId;
-    if(target!==TMV3.VERTICALS.PreInspection.primaryCalendarId)throw new Error('CF_CALENDAR_MISMATCH');
-    const epoch=function(e){return Date.parse(e&&e.dateTime||'');};
-    const getOriginal=function(){
-      const e=call('get',endpoint(source,'/5mafnqht16o2hrqv4232rofmm3'));
-      if(e.status!=='confirmed'||e.iCalUID!==uid||e.id!=='5mafnqht16o2hrqv4232rofmm3'||
-        e.summary!==approved.title||e.location!==approved.location||
-        epoch(e.start)!==Date.parse(approved.start)||epoch(e.end)!==Date.parse(approved.end)||
-        String(e.creator&&e.creator.email||'').toLowerCase()!==approved.creator||
-        String(e.organizer&&e.organizer.email||'').toLowerCase()!==source.toLowerCase()||
-        e.recurrence||e.recurringEventId||(e.attendees||[]).length||(e.attachments||[]).length||
-        typeof e.description!=='string'||e.description.indexOf('H3 install')===-1||
-        e.description.toLowerCase().indexOf('g3.5')===-1)
-        throw new Error('TERRY_SOURCE_IDENTITY_CONTENT_OR_GUEST_DRIFT');
-      return e;
-    };
-    const readCopy=function(e){
-      const found=call('get',endpoint(target,'?iCalUID='+encodeURIComponent(uid)+'&maxResults=20'));
-      const items=found.items||[];
-      if(found.nextPageToken||items.length>1)throw new Error('TERRY_ICALUID_DUPLICATES');
-      const copy=items.length?items[0]:null;
-      if(copy){
-        const marker=copy.extendedProperties&&copy.extendedProperties.private||{};
-        if(copy.iCalUID!==uid||copy.status==='cancelled'||copy.summary!==e.summary||
-          copy.description!==e.description||copy.location!==e.location||
-          epoch(copy.start)!==epoch(e.start)||epoch(copy.end)!==epoch(e.end)||
-          (copy.attendees||[]).length||copy.privateCopy!==true||
-          marker.tmv3TaskWriteHold!=='YES'||marker.tmv3SourceEventUid!==uid)
-          throw new Error('TERRY_SHARED_COPY_DIFFERENT_OR_UNVERIFIED_NO_RETRY');
-      } else {
-        const near=call('get',endpoint(target,'?timeMin='+encodeURIComponent('2026-11-11T19:50:00Z')+
-          '&timeMax='+encodeURIComponent('2026-11-11T21:10:00Z')+'&singleEvents=true&maxResults=250'));
-        if(near.nextPageToken||(near.items||[]).some(function(x){
-          return x.status!=='cancelled'&&x.iCalUID!==uid&&
-            (String(x.summary||'').indexOf('53480')>=0||
-             String(x.summary||'').toLowerCase().indexOf('terry beettam')>=0||
-             String(x.summary||'').indexOf('523-9364')>=0);
-        }))throw new Error('TERRY_POSSIBLE_CF_DUPLICATE_NO_IMPORT');
-      }
-      return copy;
-    };
-    let origin=getOriginal(),copy=readCopy(origin);
-    if(mode==='PREVIEW'||copy){
-      const status=copy?'TERRY_COPY_ALREADY_VERIFIED':'TERRY_SAFE_IMPORT_CANDIDATE';
-      const result={status:status,eventId:uid,copyId:copy?copy.id:'',
-        guestWrites:0,emailSends:0,strivenWrites:0,taskCreates:0};
-      Logger.log('PI_TERRY_INTAKE='+JSON.stringify(result));return result;
-    }
-    // Revalidate immediately before the one permitted import.
-    origin=getOriginal();if(readCopy(origin))throw new Error('TERRY_COPY_RACE_NO_RETRY');
-    const body={iCalUID:uid,summary:origin.summary,location:origin.location,
-      description:origin.description,start:origin.start,end:origin.end,
-      organizer:origin.organizer,visibility:origin.visibility||'private',privateCopy:true,
-      reminders:{useDefault:false,overrides:[]},
-      extendedProperties:{private:{tmv3CustomerNumber:'53480',tmv3TaskWriteHold:'YES',
-        tmv3SourceEventUid:uid,tmv3SourceCalendarId:source}}};
-    // Import copies the existing iCalUID without inviting attendees.
-    // No attendees property, CalendarApp.addGuest, insert, move or MailApp.
-    let response;
-    try{response=call('post',endpoint(target,'/import'),body);}
-    catch(err){throw new Error('TERRY_IMPORT_OUTCOME_UNKNOWN_DO_NOT_RETRY_'+err.message);}
-    if(response.iCalUID!==uid)throw new Error('TERRY_IMPORT_IDENTITY_UNCERTAIN_NO_RETRY');
-    copy=readCopy(origin);
-    if(!copy)throw new Error('TERRY_IMPORT_READBACK_NOT_VISIBLE_NO_RETRY');
-    const after=getOriginal();
-    if(after.summary!==origin.summary||after.description!==origin.description||
-       after.location!==origin.location||JSON.stringify(after.attendees||[])!==JSON.stringify(origin.attendees||[]))
-      throw new Error('TERRY_ORIGINAL_CHANGED_STOP');
-    const result={status:'TERRY_PRIVATE_CF_COPY_VERIFIED',eventId:uid,copyId:copy.id,
-      sourceUnchanged:true,notesPreserved:true,calendarWrites:1,
-      guestInvites:0,emailSends:0,strivenWrites:0,taskCreates:0,taskWriteHold:true};
-    Logger.log('PI_TERRY_INTAKE='+JSON.stringify(result));return result;
-  }finally{lock.releaseLock();}
+  return {status:'PI_TERRY_MANUAL_INTAKE_ARCHIVED_NO_MUTATION',
+    mode:mode,eventId:'5mafnqht16o2hrqv4232rofmm3@google.com',
+    calendarWrites:0,guestInvites:0,emailsSent:0,strivenWrites:0};
 }
+
 function tmv3_previewTerryQuietCalendarIntake() {
-  return tmv3_terryQuietCalendarIntake_('PREVIEW');
-}
-function tmv3_importTerryQuietCalendarIntake() {
-  return tmv3_terryQuietCalendarIntake_('IMPORT');
+  return {status:'PI_TERRY_REQUIRES_FRESH_READ_ONLY_CHECK',calendarWrites:0,
+    taskWrites:0,emailsSent:0};
 }
 
+function tmv3_importTerryQuietCalendarIntake() { return {status:'REQUIRES_FRESH_OPERATOR_APPROVAL_SEPARATE_TOOL',writes:0,emailsSent:0,guestInvites:0}; }
 
-// PREINSPECTION LOCK 2026-11-10-r1.
-// Canonical rules: docs/workflows/preinspection/STANDARD_2026_11_10.md
-// Never fetch a rule from GitHub or ask an agent to interpret it at runtime.
 function tmv3_piRendererFingerprint_() {
   const source = Function.prototype.toString.call(tmv3_preInspectionMissingDetailEmailPreview_);
   let hash = 2166136261;
@@ -4335,43 +3121,84 @@ function tmv3_piRendererFingerprint_() {
 }
 
 function tmv3_piAssertLockedStandard_() {
-  const root = TMV3_HARD_RULES || {};
-  const r = root.PreInspection || {};
-  const live = (TMV3.VERTICALS || {}).PreInspection || {};
-  if (root.version !== '2026-11-10-r1' || r.lockedStandardId !== '2026-11-10-r1') {
-    throw new Error('PI_STANDARD_VERSION_MISMATCH_NO_WRITE');
-  }
-  if (r.lockedStandardReference !== 'docs/workflows/preinspection/STANDARD_2026_11_10.md') {
-    throw new Error('PI_STANDARD_REFERENCE_MISMATCH_NO_WRITE');
-  }
-  if (Number(r.taskTypeId) !== 105 || Number(live.defaultPoolId) !== 8 ||
-      r.orderRequired !== false || r.attachOrderToTask !== false ||
-      r.field854Policy !== 'DO_NOT_MANAGE' || r.infoCustomFieldsAtCreate !== 'NONE' ||
-      r.calendarNotesPolicy !== 'CALENDAR_ONLY' || live.descriptionMustBeBlankAtCreate !== true ||
-      live.requestedByFromOrganizer !== true) {
-    throw new Error('PI_TASK_RULES_MISMATCH_NO_WRITE');
-  }
-  if (r.ownerGuestPolicy !== 'VERIFIED_EVENT_OWNER_ONLY') {
-    throw new Error('PI_OWNER_GUEST_POLICY_DRIFT_NO_WRITE');
-  }
-  if (JSON.stringify((r.inspectorOwnedFields || []).slice().sort()) !== JSON.stringify([852,853,854,860])) {
-    throw new Error('PI_INSPECTOR_FIELDS_POLICY_DRIFT_NO_WRITE');
-  }
-  if (JSON.stringify((TMV3.OPERATIONS.preInspectionAutomationScheduleHours || [])) !== JSON.stringify([8,13,17]) ||
-      TMV3.OPERATIONS.preInspectionAutomationScheduleTimezone !== 'America/Toronto') {
-    throw new Error('PI_NOTIFICATION_SCHEDULE_DRIFT_NO_WRITE');
-  }
-  if (r.notificationTemplatePolicy !== 'EXACT_EXISTING_RENDERER_NO_REDRAFT' ||
-      r.notificationRendererFingerprint !== tmv3_piRendererFingerprint_()) {
+  if(typeof TMV3_HARD_RULES==='undefined'||!TMV3_HARD_RULES ||
+      typeof TMV3==='undefined'||!TMV3.VERTICALS||!TMV3.OPERATIONS)
+    throw new Error('PI_STANDARD_DEPENDENCY_MISSING_NO_WRITE');
+  const root=TMV3_HARD_RULES,r=root.PreInspection||{};
+  const live=TMV3.VERTICALS.PreInspection||{};
+  if(root.version!=='2026-11-10-r1'||r.lockedStandardId!=='2026-11-10-r1'||
+     r.lockedStandardReference!=='docs/workflows/preinspection/STANDARD_2026_11_10.md')
+    throw new Error('PI_STANDARD_ID_OR_REFERENCE_DRIFT_NO_WRITE');
+  if(Number(r.taskTypeId)!==105||Number(live.defaultPoolId)!==8||
+     r.orderRequired!==false||r.attachOrderToTask!==false||
+     r.field854Policy!=='DO_NOT_MANAGE'||r.infoCustomFieldsAtCreate!=='NONE'||
+     r.calendarNotesPolicy!=='CALENDAR_ONLY'||live.descriptionMustBeBlankAtCreate!==true)
+    throw new Error('PI_TASK_HARD_RULE_DRIFT_NO_WRITE');
+  if(r.ownerGuestPolicy!=='VERIFIED_EVENT_OWNER_ONLY')
+    throw new Error('PI_GUEST_RULE_DRIFT_NO_WRITE');
+  if(JSON.stringify((r.inspectorOwnedFields||[]).map(Number).sort(function(a,b){return a-b;}))!==
+     JSON.stringify([852,853,854,860]))
+    throw new Error('PI_INSPECTOR_OWNED_FIELDS_DRIFT_NO_WRITE');
+  if(JSON.stringify((TMV3.OPERATIONS.preInspectionAutomationScheduleHours||[]))!==JSON.stringify([8,13,17])||
+     TMV3.OPERATIONS.preInspectionAutomationScheduleTimezone!=='America/Toronto')
+    throw new Error('PI_DAILY_SLOTS_DRIFT_NO_WRITE');
+  const presentation=r.presentation||{};
+  if(presentation.linkHeading!=='-----Striven Links-----'||
+     (presentation.calendarTitleParts||[]).join('|')!=='customerNumber|customerName|phone'||
+     (presentation.taskTitleParts||[]).join('|')!=='customerName|address|phone')
+    throw new Error('PI_PRESENTATION_DRIFT_NO_WRITE');
+  if(r.notificationTemplatePolicy!=='EXACT_EXISTING_RENDERER_NO_REDRAFT'||
+     r.notificationRendererFingerprint!==tmv3_piRendererFingerprint_())
     throw new Error('PI_NOTIFICATION_TEMPLATE_DRIFT_NO_SEND');
-  }
-  if (r.presentation.linkHeading !== '-----Striven Links-----' ||
-      r.presentation.calendarTitleParts.join('|') !== 'customerNumber|customerName|phone' ||
-      r.presentation.taskTitleParts.join('|') !== 'customerName|address|phone') {
-    throw new Error('PI_CALENDAR_OR_TASK_FORMAT_DRIFT_NO_WRITE');
-  }
-  return {status:'PASS',standard:'2026-11-10-r1',
-    reference:r.lockedStandardReference,notificationFingerprint:r.notificationRendererFingerprint};
+  return {status:'PASS',standard:root.version,reference:r.lockedStandardReference,
+    requestedByTypeContract:tmv3_piRequestedByContract_()};
+}
+
+/** Canonical rule confirmed by operator: RequestedBy.Type = employee.
+ * The Employee ID must equal the verified owning Calendar employee. An
+ * explicitly conflicting shared configuration remains a deployment blocker. */
+/** Pure contract validation; never mutate the shared frozen policy in tests. */
+function tmv3_piRequestedByContractFromRule_(rule) {
+  const configured=String(rule && rule.requestedByType || '').trim().toLowerCase();
+  if(configured && configured!=='employee')
+    throw new Error('PI_REQUESTED_BY_SHARED_STANDARD_CONFLICT_NO_WRITE');
+  return 'employee';
+}
+
+function tmv3_piRequestedByContract_() {
+  const rule=(typeof TMV3_HARD_RULES!=='undefined' && TMV3_HARD_RULES &&
+    TMV3_HARD_RULES.PreInspection) || {};
+  return tmv3_piRequestedByContractFromRule_(rule);
+}
+
+/** Shape only: a positive integer Employee ID; provenance checked at Step 7. */
+function tmv3_piAssertRequestedByEmployeeShape_(requestedBy) {
+  tmv3_piRequestedByContract_();
+  const type=String(requestedBy && (requestedBy.Type||requestedBy.type)||'').trim().toLowerCase();
+  const rawId=requestedBy && (requestedBy.Id!==undefined?requestedBy.Id:requestedBy.id);
+  const id=Number(rawId);
+  if(type!=='employee'||!/^[1-9]\d*$/.test(String(rawId||''))||
+      !Number.isSafeInteger(id)||id<=0)
+    throw new Error('PI_REQUESTED_BY_VERIFIED_EMPLOYEE_REQUIRED_NO_WRITE');
+  return true;
+}
+
+/** Plan requester must equal the employee mapped from this event's verified
+ * owning Calendar. A customer Contact or arbitrary salesperson is not proof. */
+function tmv3_piAssertRequestedByPlan_(plan, record) {
+  tmv3_piRequestedByContract_();
+  const owner=tmv3_piVerifiedOwnerEmployee_(record);
+  if(owner.status!=='MATCHED'||!Number.isSafeInteger(owner.employeeId))
+    throw new Error(owner.blocker||'PI_REQUESTED_BY_OWNER_UNVERIFIED_NO_WRITE');
+  const type=String(plan&&plan.expectedRequestedByType||'').trim().toLowerCase();
+  const rawId=plan&&plan.expectedRequestedById;
+  const id=Number(rawId);
+  if(type!=='employee'||!/^[1-9]\d*$/.test(String(rawId||''))||
+      !Number.isSafeInteger(id)||id<=0)
+    throw new Error('PI_EXPECTED_REQUESTED_BY_EMPLOYEE_NOT_PROVEN_NO_WRITE');
+  if(id!==owner.employeeId)
+    throw new Error('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE');
+  return true;
 }
 
 function tmv3_piCreatorEmailExcluded_(creatorEmail) {
@@ -4398,15 +3225,15 @@ function tmv3_piAssertTaskTitle_(value) {
 
 function tmv3_piAssertSafeTaskPatch_(payload) {
   tmv3_piAssertLockedStandard_();
-  const p = payload || {};
-  const forbidden = /^(?:InfoCustomFields|Description|SalesOrder|SalesOrderID|SalesOrderId|SOId|Type)$/i;
-  Object.keys(p).forEach(function(k) {
-    if (forbidden.test(k)) throw new Error('PI_PROTECTED_TASK_FIELD_NO_WRITE:' + k);
+  const p=payload||{};
+  const protectedNames=/^(?:InfoCustomFields|CustomFields|Description|SalesOrder|SalesOrderID|SalesOrderId|SOId|Order|OrderId|Type)$/i;
+  Object.keys(p).forEach(function(key){
+    if(protectedNames.test(key))throw new Error('PI_PROTECTED_TASK_FIELD_NO_WRITE:'+key);
+    if(key.toLowerCase()==='requestedby' && key!=='RequestedBy')
+      throw new Error('PI_REQUESTED_BY_FIELD_CASE_INVALID_NO_WRITE');
   });
-  if (p.RequestedBy && String(p.RequestedBy.Type || '').toLowerCase() !== 'employee') {
-    throw new Error('PI_REQUESTED_BY_MUST_BE_VERIFIED_EMPLOYEE_NO_WRITE');
-  }
-  if (p.Title !== undefined) tmv3_piAssertTaskTitle_(p.Title);
+  if(p.RequestedBy!==undefined)tmv3_piAssertRequestedByEmployeeShape_(p.RequestedBy);
+  if(p.Title!==undefined)tmv3_piAssertTaskTitle_(p.Title);
   return true;
 }
 
@@ -4417,16 +3244,346 @@ function tmv3_preInspectionLockedStandardStatus() {
 
 // Only positively verified owner -> employee mappings may authorize writes.
 // Jay and Karen calendar IDs are not yet certified in this staging source.
-function tmv3_piVerifiedOwnerEmployee_(eventRecord) {
-  const record = eventRecord || {};
-  const cfg = TMV3.VERTICALS.PreInspection || {};
-  const ownerCalendar = String(record.organizerCalendarId || '').trim();
-  const stephenCalendar = String((cfg.secondaryCalendarIds || [])[0] || '').trim();
-  if (ownerCalendar && stephenCalendar && ownerCalendar === stephenCalendar) {
+/** Resolve Requested By strictly from a known owning calendar identity.
+ * Calendar source array order MUST NEVER confer employee identity.
+ * Stephen/Jay are grounded in the approved employee table. Karen remains REVIEW.
+ * An alternate Stephen calendar ID is accepted only if the live configuration
+ * explicitly associates a *single* secondary calendar with Stephen's email. */
+function tmv3_piVerifiedOwnerEmployee_(record) {
+  const cfg=(typeof TMV3!=='undefined' && TMV3.VERTICALS &&
+    TMV3.VERTICALS.PreInspection)||{};
+  const owner=String(record && record.organizerCalendarId || '').trim().toLowerCase();
+  const stephenEmail='stephen@classicfireplace.ca';
+  const jayEmail='jay@classicfireplace.ca';
+  const karenEmail='karen@classicfireplace.ca';
+  const aliases=(cfg.secondaryCalendarIds||[]).map(function(v){
+    return String(v||'').trim().toLowerCase();
+  }).filter(Boolean);
+  const primaryId=String(cfg.primaryCalendarId||'').trim().toLowerCase();
+  const configuredStephen=String(cfg.secondaryOwnerEmail||'').trim().toLowerCase();
+  if(!owner)return {status:'REVIEW',employeeId:null,blocker:'PI_OWNER_MISSING_NO_WRITE'};
+  if(owner===stephenEmail)
+    return {status:'MATCHED',employeeId:15,employeeName:'Stephen Foley',evidence:'EXACT_VERIFIED_OWNER_EMAIL'};
+  if(owner===jayEmail)
+    return {status:'MATCHED',employeeId:1,employeeName:'Jay Scott',evidence:'EXACT_VERIFIED_OWNER_EMAIL'};
+  if(owner===karenEmail)
+    return {status:'REVIEW',employeeId:null,blocker:'PI_KAREN_EMPLOYEE_ID_UNVERIFIED_NO_WRITE'};
+  // Never assign an employee by guessing which entry of a multi-calendar list is theirs.
+  if(aliases.length===1 && configuredStephen===stephenEmail &&
+     aliases[0]===owner && owner!==primaryId &&
+     owner!==jayEmail && owner!==karenEmail) {
     return {status:'MATCHED',employeeId:15,employeeName:'Stephen Foley',
-      evidence:'VERIFIED_STEPHEN_CALENDAR_ID'};
+      evidence:'SINGLE_SECONDARY_CALENDAR_EXPLICIT_STEPHEN_OWNER'};
   }
   return {status:'REVIEW',employeeId:null,
-    blocker:ownerCalendar ? 'PI_CALENDAR_OWNER_NOT_VERIFIED_IN_EXECUTION_CONFIG' :
-      'PI_CALENDAR_OWNER_MISSING_NO_WRITE'};
+    blocker:'PI_OWNER_EMPLOYEE_MAPPING_UNVERIFIED_NO_WRITE'};
+}
+
+
+function tmv3_preInspectionCleanedReleaseStatus() {
+  return {revision:'2026-11-11-r5',releaseApproved:TMV3_PI_CLEANED_RELEASE_APPROVED,
+    productionWritesEnabledByFile:TMV3_PI_CLEANED_RELEASE_APPROVED,
+    outstanding:['VERIFY_SHARED_STEP7_EMITS_OWNER_EMPLOYEE_REQUESTER','VERIFY_OWNER_TO_EMPLOYEE_MAPPING_KAREN',
+      'RUN_FULL_V3_SHARED_DEPENDENCIES_AND_LIVE_READBACK']};
+}
+
+/** Google Apps Script: one-click, read-only PreInspection staging validation.
+ * No Calendar writes, Striven requests, notifications or trigger changes. */
+function tmv3_runPreInspectionCleanedSelfTest() {
+  const results=[];
+  function run(name,fn){
+    try {const actual=fn();results.push({check:name,status:'PASS',result:actual||''});}
+    catch(e){results.push({check:name,status:'FAIL',error:String(e&&e.message||e)});}
+  }
+  const start='2026-11-12T13:00:00-05:00',end='2026-11-12T14:00:00-05:00';
+  const customer={'Customer ID':'100',Name:'A. Customer'};
+  const location={'Location ID':'200'};
+  const event={vertical:'PreInspection',eventId:'pi-test@google.com',start:start,end:end,phone:'(416) 555-0101'};
+  const one={'Task ID':'10','Task Type ID':105,'Customer ID':'100','Location ID':'200',
+    Start:start,Due:end,Status:'Open',Name:'A. Customer - 123 King St, Toronto - (416) 555-0101'};
+  run('01_STAGING_RELEASE_GATE',function(){if(TMV3_PI_CLEANED_RELEASE_APPROVED)throw new Error('STAGING_GATE_ON');return 'OFF';});
+  run('02_LOCKED_STANDARD_CHECK',function(){return tmv3_piAssertLockedStandard_().status;});
+  run('03_AUTHORITATIVE_SOURCE',function(){return TMV3.VERTICALS.PreInspection.primaryCalendarId?'CONFIGURED':'MISSING';});
+  run('04_TASK_TYPE_AND_POOL',function(){const p=tmv3_preInspectionCreatePolicy();if(p.taskTypeId!==105||p.requiredPoolId!==8||p.attachSalesOrder!==false)throw Error('POLICY_DRIFT');return 'PASS';});
+  run('05_INSPECTOR_FIELDS_UNMANAGED',function(){const p=tmv3_preInspectionCreatePolicy();if(p.field854!=='DO_NOT_MANAGE'||p.infoCustomFieldsAtCreate!=='NONE')throw Error('FIELD_DRIFT');return 'PASS';});
+  run('06_NO_UNATTENDED_GUEST_SYNC',function(){if(tmv3_preInspectionGuestSyncDecision_([], 'stephen@classicfireplace.ca','stephen@classicfireplace.ca').action!=='NONE')throw Error('UNSAFE_GUEST_ACTION');return 'NO_ACTION';});
+  run('07_OWNER_UNKNOWN_BLOCKED',function(){if(tmv3_piVerifiedOwnerEmployee_({organizerCalendarId:'unknown'}).status!=='REVIEW')throw Error('OWNER_NOT_BLOCKED');return 'REVIEW';});
+  run('08_STRONG_TASK_MATCH',function(){const x=tmv3_preInspectionTaskDecision_(event,customer,location,[one]);if(x.status!=='MATCHED')throw Error('STRONG_MATCH_FAILED:'+x.status);return x.status;});
+  run('09_UNRELATED_SINGLE_OPEN_REVIEW',function(){const t=Object.assign({},one,{'Location ID':'999',Start:'2026-11-20T13:00:00-05:00'});const x=tmv3_preInspectionTaskDecision_(event,customer,location,[t]);if(x.status!=='REVIEW')throw Error('BAD_REUSE');return x.errorCode;});
+  run('10_MULTIPLE_OPEN_REVIEW',function(){const x=tmv3_preInspectionTaskDecision_(event,customer,location,[one,Object.assign({},one,{'Task ID':'11'})]);if(x.status!=='REVIEW')throw Error('DUPLICATE_RISK');return x.errorCode;});
+  run('11_NO_TWELVE_HOUR_REWRITE',function(){const t=Object.assign({},one,{Start:'2026-11-12T01:00:00-05:00'});if(tmv3_step5AlignPreInspectionTaskClock_(t,event).Start!==t.Start)throw Error('CLOCK_MUTATION');return 'UNCHANGED';});
+  run('12_REQUESTED_BY_CONTRACT',function(){const type=tmv3_piRequestedByContract_();if(type!=='employee')throw Error('PI_REQUESTED_BY_CONTRACT_NOT_EMPLOYEE');return type;});
+  run('13_DISABLED_NOTIFICATION',function(){if(tmv3_preInspectionSendMissingDetails_(event).sent!==0)throw Error('EMAIL_SENT');return 'NO_SEND';});
+  run('14_DISABLED_BUSINESS_CYCLE',function(){const x=tmv3_preInspectionAutomationCycle_({eventId:'pi-test@google.com'});if(x.writes!==0)throw Error('UNEXPECTED_WRITE');return x.status;});
+  run('15_CONTACT_REQUESTED_BY_REJECTED',function(){try{tmv3_piAssertRequestedByEmployeeShape_({Type:'contact',Id:123});}catch(e){if(/EMPLOYEE_REQUIRED/.test(String(e)))return 'REJECTED';throw e;}throw Error('CONTACT_REQUESTER_ACCEPTED');});
+  run('16_EMPLOYEE_REQUESTED_BY_VALID_SHAPE',function(){tmv3_piAssertRequestedByEmployeeShape_({Type:'employee',Id:15});return 'EMPLOYEE_SHAPE_VALID';});
+  run('17_REQUESTED_BY_PLAN_MISSING_REJECTED',function(){try{tmv3_piAssertRequestedByPlan_({expectedRequestedByType:'employee'},{organizerCalendarId:'stephen@classicfireplace.ca'});}catch(e){if(/NOT_PROVEN/.test(String(e)))return 'REJECTED';throw e;}throw Error('MISSING_REQUESTER_ACCEPTED');});
+  run('18_REQUESTED_BY_PLAN_OWNER_EMPLOYEE_VALID',function(){tmv3_piAssertRequestedByPlan_({expectedRequestedByType:'employee',expectedRequestedById:'15'},{organizerCalendarId:'stephen@classicfireplace.ca'});return 'OWNER_EMPLOYEE_VALID';});
+  run('19_SHARED_CONTACT_CONTRACT_REJECTED',function(){try{tmv3_piRequestedByContractFromRule_(Object.freeze({requestedByType:'contact'}));}catch(e){if(/SHARED_STANDARD_CONFLICT/.test(String(e)))return 'REJECTED';throw e;}throw Error('CONTACT_CONTRACT_ACCEPTED');});
+  run('20_CREATE_REQUIRES_EMPLOYEE',function(){const p={Type:{Id:105},Description:'',RequestedBy:{Type:'employee',Id:15}};tmv3_assertPreInspectionCreatePayloadHardRules_(p);try{tmv3_assertPreInspectionCreatePayloadHardRules_(Object.assign({},p,{RequestedBy:{Type:'contact',Id:123}}));}catch(e){if(/EMPLOYEE_REQUIRED/.test(String(e)))return 'CONTACT_REJECTED';throw e;}throw Error('CREATE_ACCEPTED_CONTACT');});
+  run('21_PLAN_REJECTS_OTHER_EMPLOYEE',function(){try{tmv3_piAssertRequestedByPlan_({expectedRequestedByType:'employee',expectedRequestedById:'1'},{organizerCalendarId:'stephen@classicfireplace.ca'});}catch(e){if(/MUST_MATCH_VERIFIED_EVENT_OWNER/.test(String(e)))return 'REJECTED';throw e;}throw Error('OTHER_EMPLOYEE_ACCEPTED');});
+  run('22_PLAN_REJECTS_UNKNOWN_OWNER',function(){try{tmv3_piAssertRequestedByPlan_({expectedRequestedByType:'employee',expectedRequestedById:'15'},{organizerCalendarId:'unknown@example.com'});}catch(e){if(/MAPPING_UNVERIFIED/.test(String(e)))return 'REJECTED';throw e;}throw Error('UNVERIFIED_OWNER_ACCEPTED');});
+  run('23_PLAN_REJECTS_CONTACT',function(){try{tmv3_piAssertRequestedByPlan_({expectedRequestedByType:'contact',expectedRequestedById:'123'},{organizerCalendarId:'stephen@classicfireplace.ca'});}catch(e){if(/EMPLOYEE_NOT_PROVEN/.test(String(e)))return 'REJECTED';throw e;}throw Error('CONTACT_PLAN_ACCEPTED');});
+  run('24_PATCH_REJECTS_CONTACT',function(){try{tmv3_piAssertSafeTaskPatch_({RequestedBy:{Type:'contact',Id:123}});}catch(e){if(/EMPLOYEE_REQUIRED/.test(String(e)))return 'REJECTED';throw e;}throw Error('CONTACT_PATCH_ACCEPTED');});
+
+  run('25_OWNER_EMAIL_NOT_ARRAY_ORDER',function(){const x=tmv3_piVerifiedOwnerEmployee_({organizerCalendarId:'stephen@classicfireplace.ca'});if(x.status!=='MATCHED'||x.employeeId!==15)throw Error('STEPHEN_OWNER_NOT_DETERMINISTIC');return 'STEPHEN_15';});
+  run('26_JAY_EMAIL_OWNED_ASSIGNMENT',function(){const x=tmv3_piVerifiedOwnerEmployee_({organizerCalendarId:'jay@classicfireplace.ca'});if(x.status!=='MATCHED'||x.employeeId!==1)throw Error('JAY_OWNER_INVALID');return 'JAY_1';});
+  run('27_KAREN_NOT_GUESSED',function(){const x=tmv3_piVerifiedOwnerEmployee_({organizerCalendarId:'karen@classicfireplace.ca'});if(x.status!=='REVIEW'||x.employeeId!==null)throw Error('KAREN_WRONGLY_ASSIGNED');return x.blocker;});
+  run('28_SHARED_RULE_IMMUTABLE',function(){const x=tmv3_piRequestedByContractFromRule_(Object.freeze({requestedByType:'employee'}));if(x!=='employee')throw Error('FROZEN_RULE_INVALID');return x;});
+  run('29_UNKNOWN_CALENDAR_NOT_POSITIONALLY_TRUSTED',function(){const x=tmv3_piVerifiedOwnerEmployee_({organizerCalendarId:'pi-qa-never-mapped@invalid.example'});if(x.status!=='REVIEW')throw Error('UNKNOWN_CALENDAR_TRUSTED');return x.blocker;});
+  run('30_EMPLOYEE_PLAN_JAY',function(){tmv3_piAssertRequestedByPlan_({expectedRequestedByType:'employee',expectedRequestedById:'1'},{organizerCalendarId:'jay@classicfireplace.ca'});return 'JAY_MATCH';});
+  run('31_MULTI_CALENDAR_ORDER_NOT_TRUSTED',function(){const cfg=TMV3.VERTICALS.PreInspection||{};const arr=cfg.secondaryCalendarIds||[];if(arr.length<2)return 'NOT_APPLICABLE_SINGLE_CALENDAR';const unknown=arr.map(function(s){return String(s||'').toLowerCase();}).filter(function(s){return s&&s!=='stephen@classicfireplace.ca'&&s!=='jay@classicfireplace.ca'&&s!=='karen@classicfireplace.ca';})[0];if(!unknown)return 'NO_UNKNOWN_SECONDARY_ID';const x=tmv3_piVerifiedOwnerEmployee_({organizerCalendarId:unknown});if(x.status!=='REVIEW')throw Error('CALENDAR_ARRAY_POSITION_WAS_TRUSTED');return 'POSITION_NOT_TRUSTED';});
+  const failed=results.filter(function(x){return x.status==='FAIL';});
+  const out={status:failed.length?'ATTENTION_UNRESOLVED_RULES':'SYNTHETIC_SELF_TEST_PASS',
+    revision:'2026-11-11-r5',checks:results.length,passed:results.length-failed.length,
+    failures:failed,results:results,calendarWrites:0,strivenCalls:0,emailsSent:0,
+    evidence:'PURE_FUNCTIONS_AND_CONFIG_ONLY_NOT_LIVE_READBACK'};
+  Logger.log('PI_CLEANED_SELF_TEST='+JSON.stringify(out));
+  return out;
+}
+
+
+
+
+
+
+
+
+/**
+ * GOOGLE APPS SCRIPT — CF PreInspection V3 r6 targeted live readback (time-identity fix).
+ * Add as ONE new file; do NOT replace shared functions or flip release flags.
+ * No Task POST/PATCH, Calendar writes, guest mutations, notifications,
+ * Sheets writes, or Script Properties writes from the functions in this file.
+ * Invokes existing V3 Calendar/source and Striven GET/search helpers.
+ * Date and event IDs intentionally scoped to the two authorized events.
+ */
+function tmv3_piNov11TerryJakobReadOnly() {
+  const targets = [
+    {customerNumber:'53480',customerId:53480,name:'Terry Beettam',
+     eventId:'5mafnqht16o2hrqv4232rofmm3',orderNumber:'586828',
+     start:'2026-11-11T15:00:00-05:00'},
+    {customerNumber:'62883',customerId:62883,name:'Jakob Pizzera',
+     eventId:'0aa25j196lol5imushv6mrpmv1',orderNumber:'586702',
+     start:'2026-11-11T17:00:00-05:00',preferredLocationId:58653,
+     rejectedAlternativeLocationId:58654}
+  ];
+  const before=tmv3_strivenApiBudgetStatus_();
+  if(before.exhausted || !Number.isFinite(before.remaining) || before.remaining<50) {
+    const blocked={status:'API_BUDGET_INSUFFICIENT_NO_WRITES',before:before.count,
+      remaining:before.remaining,events:[],calendarWrites:0,taskWrites:0,emailsSent:0};
+    Logger.log('PI_NOV11_TARGET_READBACK='+JSON.stringify(blocked));return blocked;
+  }
+  let records;
+  try {records=tmv3_preInspectionTodayRecords_('2026-11-11');}
+  catch(error){
+    const blocked={status:'CALENDAR_READ_FAILED_NO_WRITES',error:String(error),
+      events:[],calendarWrites:0,taskWrites:0,emailsSent:0};
+    Logger.log('PI_NOV11_TARGET_READBACK='+JSON.stringify(blocked));return blocked;
+  }
+  const events=[];
+  targets.forEach(function(target){
+    try {events.push(tmv3_piNov11ReadOnlyOne_(target,records));}
+    catch(error){events.push({customerNumber:target.customerNumber,eventId:target.eventId,
+      status:'REVIEW_NO_WRITES',blockers:['READBACK_EXCEPTION: '+String(error&&error.message||error)]});}
+  });
+  const output={revision:'2026-11-11-r6-calendar-identity-instant',
+    status:events.every(function(e){return e.status==='EVIDENCE_READY_PENDING_STAGING_RELEASE';})
+      ? 'EVIDENCE_READY_NO_WRITES':'REVIEW_REMAINS_NO_WRITES',
+    events:events,apiBefore:before.count,apiAfter:tmv3_strivenApiBudgetStatus_().count,
+    calendarWrites:0,taskWrites:0,emailsSent:0,
+    nextAction:'Resolve blockers before guarded Step 5/6 replan. Do not bypass r5 release gate.'};
+  Logger.log('PI_NOV11_TARGET_READBACK='+JSON.stringify(output));
+  return output;
+}
+
+/**
+ * Strict business-event identity check. Does not mutate Calendar or normalize
+ * either event's stored timestamp; conversion is comparison-only.
+ * The blockers separately identify a changed appointment versus a formatting
+ * difference. Expects same exact instant (no fuzzy start-time tolerance).
+ */
+function tmv3_piNov11IdentityReadback_(record,target) {
+  const cleanId=function(id){return String(id||'').trim().toLowerCase().replace(/@google\.com$/,'');};
+  const actualStart=record && record.start;
+  const expectedStart=target && target.start;
+  const aMs=actualStart instanceof Date ? actualStart.getTime() : new Date(actualStart).getTime();
+  const eMs=new Date(expectedStart).getTime();
+  const startParseable=Number.isFinite(aMs) && Number.isFinite(eMs);
+  const checks={
+    eventId:cleanId(record && record.eventId)===cleanId(target && target.eventId),
+    calendarRole:String(record && record.calendarRole||'')==='PRIMARY_SHARED',
+    customerNumber:String(record && record.customerNumber||'').trim()===String(target && target.customerNumber||'').trim(),
+    startParseable:startParseable,
+    startInstant:startParseable && aMs===eMs,
+    active:String(record && record.status||'').trim().toLowerCase()!=='cancelled'
+  };
+  const failures=Object.keys(checks).filter(function(k){return !checks[k];});
+  const map={eventId:'CALENDAR_EVENT_ID_CHANGED',calendarRole:'CALENDAR_NOT_PRIMARY_SHARED',
+    customerNumber:'CALENDAR_CUSTOMER_NUMBER_MISMATCH',
+    startParseable:'CALENDAR_START_UNREADABLE',startInstant:'CALENDAR_START_INSTANT_CHANGED',
+    active:'CALENDAR_EVENT_CANCELLED'};
+  // Avoid reporting both missing parse and a start mismatch for one invalid date.
+  const blockers=failures.filter(function(k){return k!=='startInstant'||startParseable;}).map(function(k){return map[k];});
+  return {ok:blockers.length===0,blockers:blockers,evidence:{checks:checks,
+    expectedStart:String(expectedStart||''),
+    actualStartType:Object.prototype.toString.call(actualStart),
+    actualStart:String(actualStart||''),
+    actualStartInstant:Number.isFinite(aMs)?new Date(aMs).toISOString():null,
+    expectedStartInstant:Number.isFinite(eMs)?new Date(eMs).toISOString():null,
+    actualCalendarRole:String(record && record.calendarRole||''),
+    actualCustomerNumber:String(record && record.customerNumber||''),
+    actualEventId:String(record && record.eventId||'')}};
+}
+
+function tmv3_piNov11ReadOnlyOne_(target,records) {
+  const events=(records||[]).filter(function(r){
+    return String(r.eventId||'').replace(/@google\.com$/i,'')===target.eventId;
+  });
+  const blockers=[];
+  if(events.length!==1) return {customerNumber:target.customerNumber,eventId:target.eventId,
+    status:'REVIEW_NO_WRITES',blockers:['AUTHORITATIVE_CALENDAR_EVENT_NOT_UNIQUE']};
+  const record=events[0];
+  // The shared V3 Calendar mapper may provide start as a Date, ISO UTC,
+  // or a timestamp with a Toronto offset. Compare the *instant*, not
+  // String(Date) to an ISO literal. Keep identity/source fail-closed.
+  const identity=tmv3_piNov11IdentityReadback_(record,target);
+  if(!identity.ok) {
+    return {customerNumber:target.customerNumber,eventId:target.eventId,
+      status:'REVIEW_NO_WRITES',blockers:identity.blockers,
+      calendarIdentityReadback:identity.evidence};
+  }
+  const owner=tmv3_piVerifiedOwnerEmployee_(record);
+  if(owner.status!=='MATCHED')blockers.push(owner.blocker||'OWNER_EMPLOYEE_UNVERIFIED');
+  const hold=tmv3_preInspectionApprovalHold_(record.eventId);
+  if(hold)blockers.push('OPERATOR_APPROVAL_HOLD_ACTIVE');
+  if(String(record.orderNumber||'')!==target.orderNumber)blockers.push('CALENDAR_SO_NUMBER_MISMATCH');
+  const order=tmv3_piNov11OrderReadOnly_(target);
+  if(order.blocker)blockers.push(order.blocker);
+  else {
+    if(['approved','in progress'].indexOf(order.status)>=0)blockers.push('ORDER_IS_INSTALL_OR_IN_PROGRESS_NOT_PI');
+    else if(['quoted','incomplete','pending approval'].indexOf(order.status)<0)
+      blockers.push('ORDER_STATUS_NOT_AUTHORIZED_FOR_PI');
+  }
+  const locations=tmv3_preInspectionCustomerLocationsFresh_(target.customerId);
+  const matching=locations.filter(function(l){
+    return Number(l['Customer ID'])===target.customerId &&
+      tmv3_addressStrongMatch_(tmv3_addressParts_(record.location),
+        tmv3_addressParts_(tmv3_locationFullAddress_(l)));
+  });
+  if(!matching.length)blockers.push('NO_FRESH_CUSTOMER_OWNED_ADDRESS_MATCH');
+  const matchedIds=matching.map(function(l){return Number(l['Location ID']);}).sort(function(a,b){return a-b;});
+  if(!order.blocker) {
+    if(matchedIds.indexOf(order.shipToLocationId)<0)
+      blockers.push('SO_SHIP_TO_NOT_A_MATCHING_CUSTOMER_OWNED_LOCATION');
+    if(target.preferredLocationId && order.shipToLocationId!==target.preferredLocationId)
+      blockers.push('JAKOB_SO_SHIP_TO_DOES_NOT_EQUAL_OPERATOR_APPROVED_58653');
+  }
+  if(matchedIds.length>1 && !target.preferredLocationId)
+    blockers.push('MULTIPLE_CUSTOMER_OWNED_LOCATION_MATCHES');
+  if(target.preferredLocationId && matchedIds.indexOf(target.preferredLocationId)<0)
+    blockers.push('JAKOB_APPROVED_LOCATION_NOT_FRESHLY_VERIFIED');
+  const customer={'Customer ID':String(target.customerId),'Customer Number':target.customerNumber,'Name':target.name};
+  const taskIds=tmv3_searchPreInspectionTaskIdsForCustomer_(customer);
+  if(taskIds.length>10)blockers.push('TASK_HISTORY_OVER_TEN_BLOCKED_BY_EXISTING_CREATE_GUARD');
+  // Existing V3 create guard rejects >10 IDs. Avoid potentially hundreds
+  // of unnecessary Task GETs in that case. Never treat truncated GETs as clear.
+  const tasks=taskIds.length>10 ? [] : taskIds.map(function(id){return tmv3_getTaskById_(id);});
+  if(tasks.some(function(t){return !t || Number(t['Task Type ID'])!==105 ||
+     Number(t['Customer ID'])!==target.customerId || !/^\d+$/.test(String(t['Task ID']||''));}))
+    blockers.push('FRESH_TASK_HISTORY_OWNERSHIP_OR_TYPE_CONFLICT');
+  const opens=tasks.filter(function(t){return t&&tmv3_taskIsOpen_(t.Status);});
+  const completed=tasks.filter(function(t){return t&&tmv3_taskIsCompleted_(t.Status);});
+  if(opens.length)blockers.push('OPEN_TYPE105_TASK_EXISTS_REQUIRES_EVENT_SPECIFIC_STEP5_MATCH');
+  const completedOnVisit=completed.filter(function(t){
+    return t.Start && tmv3_sameLocalDay_(record.start,t.Start) &&
+      (!t['Location ID'] || matchedIds.indexOf(Number(t['Location ID']))>=0);
+  });
+  if(completedOnVisit.length)blockers.push('POSSIBLE_COMPLETED_VISIT_TASK_DO_NOT_RECREATE');
+  return {customerNumber:target.customerNumber,eventId:target.eventId,
+    status:blockers.length?'REVIEW_NO_WRITES':'EVIDENCE_READY_PENDING_STAGING_RELEASE',
+    blockers:blockers,requesterEmployeeId:owner.status==='MATCHED'?owner.employeeId:null,
+    approvalHoldActive:!!hold,orderId:order.orderId||null,orderNumber:target.orderNumber,
+    orderStatus:order.status||'',orderShipToLocationId:order.shipToLocationId||null,
+    freshMatchingLocationIds:matchedIds,operatorPreferredLocationId:target.preferredLocationId||null,
+    freshType105TaskCount:taskIds.length,freshType105TaskIds:taskIds.slice(0,10),
+    openType105TaskIds:opens.map(function(t){return String(t['Task ID']);}),
+    completedVisitTaskIds:completedOnVisit.map(function(t){return String(t['Task ID']);}),
+    calendarIdentityReadback:identity.evidence,
+    note:'No write performed. Step 5/6 must be re-planned through V3 after approved cache/source repair.'};
+}
+
+function tmv3_piNov11OrderReadOnly_(target) {
+  const query={PageIndex:0,PageSize:2,Number:target.orderNumber,CustomerId:target.customerId};
+  const search=tmv3_fetchJson_(TMV3.API_BASE+'/v1/sales-orders/search',
+    {method:'post',contentType:'application/json',payload:JSON.stringify(query)});
+  const rows=search&&(search.Data||search.data);
+  const count=Number(search&&(search.TotalCount!==undefined?search.TotalCount:search.totalCount));
+  if(!Array.isArray(rows)||count!==1||rows.length!==1)
+    return {blocker:'SALES_ORDER_SEARCH_NOT_UNIQUE_OR_INCOMPLETE'};
+  const row=rows[0],orderId=Number(tmv3_first_(row,['Id','id']));
+  if(!Number.isSafeInteger(orderId)||orderId<=0 ||
+     String(tmv3_first_(row,['Number','OrderNumber']))!==target.orderNumber)
+    return {blocker:'SALES_ORDER_SEARCH_IDENTITY_CONFLICT'};
+  const raw=tmv3_fetchJson_(TMV3.API_BASE+'/v1/sales-orders/'+orderId,{method:'get'});
+  const customer=tmv3_first_(raw,['Customer','customer']);
+  const location=tmv3_first_(raw,['ShipToLocation','shipToLocation']);
+  const status=tmv3_first_(raw,['Status','status']);
+  const customerId=Number(tmv3_first_(customer,['Id','id']));
+  const locationId=Number(tmv3_first_(location,['Id','id']));
+  const name=String(tmv3_first_(status,['Name','name'])||'').trim().toLowerCase();
+  if(Number(tmv3_first_(raw,['Id','id']))!==orderId ||
+     String(tmv3_first_(raw,['OrderNumber','Number']))!==target.orderNumber ||
+     customerId!==target.customerId || !Number.isSafeInteger(locationId)||locationId<=0)
+    return {blocker:'SALES_ORDER_LIVE_IDENTITY_OR_SHIPTO_UNVERIFIED'};
+  return {orderId:orderId,shipToLocationId:locationId,status:name};
+}
+
+/**
+ * Separately callable guarded write runner. Intentionally refuses ALL writes
+ * until r5's established release flag AND production mode are authorized,
+ * missing-details email/failure-alert switches are OFF, and BOTH preflights
+ * return full evidence. Never toggles global safety configuration itself.
+ * This does not replace the shared Step 7 checks/readbacks.
+ */
+function tmv3_piNov11TerryJakobRunIfReleased() {
+  if(!TMV3_PI_CLEANED_RELEASE_APPROVED || TMV3.MODE!=='PRODUCTION_WRITE') {
+    const result={status:'RELEASE_NOT_APPROVED_NO_WRITES',taskWrites:0,emailsSent:0,
+      message:'Run tmv3_piNov11TerryJakobReadOnly first; keep release disabled until Step 7 is verified.'};
+    Logger.log('PI_NOV11_TARGET_EXECUTION='+JSON.stringify(result));return result;
+  }
+  if(TMV3.OPERATIONS.preInspectionMissingDetailEmailsEnabled!==false ||
+     TMV3.OPERATIONS.preInspectionFailureAlertsEnabled!==false ||
+     tmv3_clean_(TMV3.OPERATIONS.preInspectionAutomationCanaryEventId)) {
+    const result={status:'NOTIFICATION_OR_CANARY_CONFIG_UNSAFE_NO_WRITES',taskWrites:0,emailsSent:0};
+    Logger.log('PI_NOV11_TARGET_EXECUTION='+JSON.stringify(result));return result;
+  }
+  const preflight=tmv3_piNov11TerryJakobReadOnly();
+  if(preflight.status!=='EVIDENCE_READY_NO_WRITES' || preflight.events.length!==2) {
+    const result={status:'PREFLIGHT_BLOCKED_NO_WRITES',taskWrites:0,emailsSent:0,
+      preflightStatus:preflight.status,events:preflight.events};
+    Logger.log('PI_NOV11_TARGET_EXECUTION='+JSON.stringify(result));return result;
+  }
+  const ids=['5mafnqht16o2hrqv4232rofmm3@google.com',
+    '0aa25j196lol5imushv6mrpmv1@google.com'];
+  const results=[];
+  for(let i=0;i<ids.length;i++) {
+    // Run exactly one target per guarded cycle; never broad queue sweeps.
+    const result=tmv3_preInspectionAutomationCycle_({force:true,eventId:ids[i],
+      reason:'OPERATOR_AUTHORIZED_TWO_EVENT_REPAIR_20261111'});
+    results.push({eventId:ids[i],status:result.status,processed:result.processed,
+      writes:result.writes||0,notifications:result.notifications||0,
+      results:result.results||[],error:result.error||''});
+    const plansVerified=Array.isArray(result.results) && result.results.some(function(one){
+      return Array.isArray(one.afterPlans) && one.afterPlans.length===1 &&
+        one.afterPlans[0].plan==='NO_CHANGE' && !one.afterPlans[0].blocker;
+    });
+    if((result.notifications||0)!==0 || result.status!=='COMPLETE' ||
+       (result.writes||0)>1 || !plansVerified)break;
+  }
+  const output={status:results.length===2 && results.every(function(r){
+      return r.status==='COMPLETE' && r.notifications===0;
+    })?'CYCLES_FINISHED_REQUIRE_LIVE_READBACK':'ATTENTION_REVIEW_BEFORE_MORE_WRITES',
+    results:results,notifications:results.reduce(function(n,r){return n+r.notifications;},0),
+    note:'Read each returned afterPlans and fresh Task/Calendar links; do not infer success from cycle status alone.'};
+  Logger.log('PI_NOV11_TARGET_EXECUTION='+JSON.stringify(output));return output;
 }
