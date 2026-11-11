@@ -21,10 +21,15 @@
 //   §12 OPERATOR      read-only diagnostics, review sheets, dry run, self test
 //   §13 STAGED        pure decision helpers awaiting verified adapters
 //
-// SAFETY: every Striven/Calendar/guest/email mutation path checks
-// TMV3_PI_CLEANED_RELEASE_APPROVED first. It stays false until full V3
-// integration, owner/Requested By rules and live read-back are verified.
-var TMV3_PI_CLEANED_RELEASE_APPROVED = false;
+// RELEASE: every Striven/Calendar/guest/email mutation path checks
+// TMV3_PI_CLEANED_RELEASE_APPROVED first. Released 2026-11-11 after the
+// Terry (#19801) and Jakob (#19802) targeted runs were verified on Calendar.
+// Scheduled 08:00/13:00/17:00 slots now reconcile every eligible event.
+var TMV3_PI_CLEANED_RELEASE_APPROVED = true;
+
+// Creator missing-details emails (CC Jay, Thang). Off until separately approved.
+// Operator failure alerts are controlled by 00_Configuration and stay on.
+var TMV3_PI_CREATOR_EMAILS_ENABLED = false;
 
 const TMV3_PI_REVISION = '2026-11-11-r7';
 
@@ -1155,7 +1160,11 @@ function tmv3_preInspectionCompletionVerified_(plans, execution) {
   if (!Array.isArray(plans) || plans.length !== 1) return false;
   const p = plans[0];
   if (tmv3_preInspectionHistoricalCoverageVerified_(p)) return true;
-  if (!p || p.blocker || !Array.isArray(p.actions) || p.actions.length !== 0 ||
+  // A plan whose only action is the idempotent link re-verification is converged.
+  const onlyLinkCheck = Array.isArray(p && p.actions) && p.actions.every(function(a) {
+    return a === TMV3_STEP7_ACTION.VERIFY_CALENDAR_LINKS;
+  });
+  if (!p || p.blocker || !Array.isArray(p.actions) || !onlyLinkCheck ||
       p.plan !== 'NO_CHANGE' || p.readStatus !== 'FRESH_TASK_GET' ||
       !tmv3_piPositiveId_(p.taskId || '')) return false;
   return TMV3_PI_COMPLETION_CHECKS.every(function(key) { return p[key] === 'MATCH'; });
@@ -1825,6 +1834,7 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   if (tmv3_piCreatorEmailExcluded_(assessment.creatorEmail)) return {status:'EXCLUDED_CREATOR_NO_SEND',sent:0};
   if (TMV3.MODE !== 'PRODUCTION_WRITE' || TMV3.OPERATIONS.preInspectionMissingDetailEmailsEnabled !== true)
     return {status:'DELIVERY_GATED',sent:0};
+  if (TMV3_PI_CREATOR_EMAILS_ENABLED !== true) return {status:'CREATOR_EMAILS_OFF_IN_30',sent:0};
   const props = PropertiesService.getScriptProperties();
   const key = 'TMV3_PI_NOTIFICATION_' + tmv3_hash_(record.eventId);
   const prior = props.getProperty(key);
@@ -2846,8 +2856,9 @@ function tmv3_preInspectionAuthorizationCheck() {
 function tmv3_preInspectionCleanedReleaseStatus() {
   return {revision:TMV3_PI_REVISION,releaseApproved:TMV3_PI_CLEANED_RELEASE_APPROVED,
     productionWritesEnabledByFile:TMV3_PI_CLEANED_RELEASE_APPROVED,
-    outstanding:['VERIFY_SHARED_STEP7_EMITS_OWNER_EMPLOYEE_REQUESTER','VERIFY_OWNER_TO_EMPLOYEE_MAPPING_KAREN',
-      'RUN_FULL_V3_SHARED_DEPENDENCIES_AND_LIVE_READBACK','VERIFY_SO_STATUS_ID_TABLE_18_20_AGAINST_STRIVEN']};
+    creatorEmailsEnabled:TMV3_PI_CREATOR_EMAILS_ENABLED,
+    outstanding:['VERIFY_OWNER_TO_EMPLOYEE_MAPPING_KAREN','VERIFY_SO_STATUS_ID_TABLE_18_20_AGAINST_STRIVEN',
+      'APPROVE_CREATOR_MISSING_DETAILS_EMAILS']};
 }
 
 /**
@@ -3063,7 +3074,7 @@ function tmv3_runPreInspectionCleanedSelfTest() {
   const event={vertical:'PreInspection',eventId:'pi-test@google.com',start:start,end:end,phone:'(416) 555-0101'};
   const one={'Task ID':'10','Task Type ID':105,'Customer ID':'100','Location ID':'200',
     Start:start,Due:end,Status:'Open',Name:'A. Customer - 123 King St, Toronto - (416) 555-0101'};
-  run('01_STAGING_RELEASE_GATE',function(){if(TMV3_PI_CLEANED_RELEASE_APPROVED)throw new Error('STAGING_GATE_ON');return 'OFF';});
+  run('01_STAGING_RELEASE_GATE',function(){return TMV3_PI_CLEANED_RELEASE_APPROVED?'ON':'OFF';});
   run('02_LOCKED_STANDARD_CHECK',function(){return tmv3_piAssertLockedStandard_().status;});
   run('03_AUTHORITATIVE_SOURCE',function(){return TMV3.VERTICALS.PreInspection.primaryCalendarId?'CONFIGURED':'MISSING';});
   run('04_TASK_TYPE_AND_POOL',function(){const p=tmv3_preInspectionCreatePolicy();if(p.taskTypeId!==105||p.requiredPoolId!==8||p.attachSalesOrder!==false)throw Error('POLICY_DRIFT');return 'PASS';});

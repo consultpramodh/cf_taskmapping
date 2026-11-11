@@ -1,6 +1,10 @@
 # Pre-Inspection rebuild status
 
-## r7 clean rebuild (2026-11-11) — live with release gate off
+## r7 — released 2026-11-11 (automation on, creator emails off)
+
+After the targeted Terry (#19801) and Jakob (#19802) runs created Tasks and verified clickable links on both Calendar copies, the release gate was turned on for all eligible events. Creator missing-details emails remain off (`TMV3_PI_CREATOR_EMAILS_ENABLED = false`). A plan whose only remaining action is link re-verification now counts as converged.
+
+### Earlier: r7 live with release gate off
 
 Deployed to the live Apps Script project by the operator on 2026-11-11 at 15:23 Toronto (editor paste of this file). In Apps Script: `tmv3_runPreInspectionCleanedSelfTest` 36/36 PASS (revision 2026-11-11-r7) and `tmv3_preInspectionLockedStandardStatus` completed (PASS). `TMV3_PI_CLEANED_RELEASE_APPROVED` remains false, so business behaviour is unchanged.
 

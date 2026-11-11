@@ -23,8 +23,9 @@ function check(name, fn) {
   checks++;
   try { fn(); } catch (e) { failures.push(name + ': ' + String(e && e.message || e).slice(0, 600)); }
 }
+const CLOSE = (f, t) => f === '30_PreInspection.gs' ? t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;') : t;
 function load(source, opts) {
-  opts = opts || {};
+  opts = Object.assign({transform: CLOSE}, opts || {});
   return h.load(SHARED, Object.assign({fixedNow: NOW, overrides: {'30_PreInspection.gs': source}}, opts));
 }
 function outcome(fn) {
@@ -130,8 +131,9 @@ check('FROZEN_RENDERER_FINGERPRINT', () => {
   assert.equal(b.ctx.tmv3_piRendererFingerprint_(), load(BASELINE).ctx.tmv3_piRendererFingerprint_());
 });
 
-check('RELEASE_GATE_DEFAULTS_CLOSED', () => {
-  assert.match(REBUILT, /^var TMV3_PI_CLEANED_RELEASE_APPROVED = false;$/m);
+check('RELEASED_WITH_CREATOR_EMAILS_OFF', () => {
+  assert.match(REBUILT, /^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;$/m);
+  assert.match(REBUILT, /^var TMV3_PI_CREATOR_EMAILS_ENABLED = false;$/m);
 });
 
 // ---------------------------------------------------------------- 2 pure functions
@@ -396,9 +398,12 @@ check('GATE_CLOSED_ENTRY_POINTS_MATCH_AND_DO_NOTHING', () => {
 });
 
 // ---------------------------------------------------------------- 6 gate OPEN: full cycle scenarios with stubbed V3 core
-const OPEN = (f, t) => f === '30_PreInspection.gs' ? t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = false;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = true;') : t;
+const OPEN = (f, t) => f === '30_PreInspection.gs' ? t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = (?:false|true);/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = true;')
+  .replace(/^var TMV3_PI_CREATOR_EMAILS_ENABLED = false;/m, 'var TMV3_PI_CREATOR_EMAILS_ENABLED = true;') : t;
 function cycleEnv(src, scenario) {
-  const env = load(src, {transform: OPEN});
+  return cycleEnvOn(load(src, {transform: OPEN}), scenario);
+}
+function cycleEnvOn(env, scenario) {
   const c = env.ctx, trace = env.log;
   const note = (k, extra) => trace.push(Object.assign({kind: k}, extra || {}));
   const recs = scenario.records.map(clone);
@@ -578,6 +583,18 @@ check('NEW_DRY_RUN_IS_PURE', () => {
   assert.deepEqual(b.log.filter(e => e.kind !== 'AUDIT'), []);
   const held = b.ctx.tmv3_piDryRunRecord_(rec(0, {eventId: '5mafnqht16o2hrqv4232rofmm3@google.com', location: ''}), NOW);
   assert.equal(held.stages.find(s => s.stage === 'NOTIFICATION_DECISION').result.status, 'OPERATOR_APPROVAL_HOLD_NO_SEND');
+});
+
+check('NEW_CREATOR_EMAILS_OFF_AND_LINK_ONLY_PLAN_CONVERGED', () => {
+  const asShipped = (f, x) => x; // gate ON, creator emails OFF, exactly as committed
+  const sc = SCENARIOS.missingDetailsEmail;
+  const run = (fn) => { const env = load(REBUILT, {transform: asShipped}); Object.assign(env, cycleEnvOn(env, sc)); return [env.ctx.tmv3_preInspectionAutomationCycle_({force: true}), env.log]; };
+  const [r, log] = run();
+  assert.equal(log.filter(e => e.kind === 'MAIL').length, 0); assert.equal(r.notifications, 0);
+  const b = load(REBUILT);
+  const linkOnly = Object.assign({}, CONVERGED, {actions: ['VERIFY_CALENDAR_LINKS']});
+  assert.equal(b.ctx.tmv3_preInspectionCompletionVerified_([linkOnly], {}), true);
+  assert.equal(b.ctx.tmv3_preInspectionCompletionVerified_([Object.assign({}, linkOnly, {actions: ['VERIFY_CALENDAR_LINKS', 'PATCH_TASK_RELATIONSHIPS']})], {}), false);
 });
 
 // ---------------------------------------------------------------- report
