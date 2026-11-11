@@ -1,0 +1,89 @@
+# Read-only capture of the live Apps Script project into the `live-capture` branch.
+# This workflow NEVER runs `clasp push` / deploy. It only pulls, fingerprints and commits.
+name: Capture live Apps Script source
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 10 * * *" # daily, ~05:17/06:17 Toronto
+
+permissions:
+  contents: write
+
+concurrency:
+  group: capture-live-source
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install clasp (pinned)
+        run: npm install -g @google/clasp@2.4.2
+
+      - name: Configure read credentials
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          APPS_SCRIPT_ID: ${{ vars.APPS_SCRIPT_ID }}
+        run: |
+          test -n "$CLASPRC_JSON" || { echo "Missing secret CLASPRC_JSON"; exit 1; }
+          test -n "$APPS_SCRIPT_ID" || { echo "Missing variable APPS_SCRIPT_ID"; exit 1; }
+          umask 077
+          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          mkdir -p "$RUNNER_TEMP/live"
+          printf '{"scriptId":"%s","rootDir":"%s","fileExtension":"gs"}' \
+            "$APPS_SCRIPT_ID" "$RUNNER_TEMP/live" > "$RUNNER_TEMP/live/.clasp.json"
+
+      - name: Pull live source
+        working-directory: ${{ runner.temp }}/live
+        run: clasp pull
+
+      - name: Fingerprint and compare with main
+        id: diff
+        run: |
+          fp() { (cd "$1" && find . -maxdepth 1 -type f \( -name '*.gs' -o -name 'appsscript.json' \) \
+                 | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1); }
+          LIVE_FP=$(fp "$RUNNER_TEMP/live")
+          MAIN_FP=$(fp apps-script)
+          echo "live=$LIVE_FP"  >> "$GITHUB_OUTPUT"
+          echo "main=$MAIN_FP"  >> "$GITHUB_OUTPUT"
+          {
+            echo "### Live Apps Script capture"
+            echo "- Live fingerprint: \`$LIVE_FP\`"
+            echo "- main fingerprint: \`$MAIN_FP\`"
+            [ "$LIVE_FP" = "$MAIN_FP" ] && echo "- Result: **no drift**" || echo "- Result: **DRIFT detected**"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit capture to live-capture branch
+        env:
+          LIVE_FP: ${{ steps.diff.outputs.live }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin live-capture >/dev/null; then
+            git checkout -B live-capture origin/live-capture
+          else
+            git checkout -B live-capture
+          fi
+          rm -f apps-script/*.gs apps-script/appsscript.json
+          cp "$RUNNER_TEMP"/live/*.gs "$RUNNER_TEMP"/live/appsscript.json apps-script/
+          git add -A apps-script
+          if git diff --cached --quiet; then
+            echo "live-capture already matches live source."
+            exit 0
+          fi
+          git commit -m "Live capture $(date -u +%Y-%m-%dT%H:%MZ) fingerprint $LIVE_FP"
+          git push origin live-capture
+
+      - name: Remove credentials
+        if: always()
+        run: rm -f "$HOME/.clasprc.json"
