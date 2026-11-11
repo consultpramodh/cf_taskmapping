@@ -3,3 +3,5 @@
 - 2026-11-10: Four permanent vertical branches plus main. Baseline is the November 10 live capture; no release approval implied.
 - 2026-11-10: Pre-Inspection standard 2026-11-10-r1 is the documented reference. Reconcile Requested By and all other conflicting rules with authoritative evidence before changes.
 - 2026-11-10: Inspector-owned fields 854, 852, 853 and 860 are unmanaged. Preserve the approved notification template.
+- 2026-11-11: PreInspection rebuild uses the 2026-11-11 live capture as behavioural baseline; preinspection-branch guards are layered on top. Release gate stays off pending verification.
+- 2026-11-11: r7 30_PreInspection.gs deployed live by the operator with the release gate off. Only the PreInspection module, its tests and docs are promoted to main; the preinspection branch's 10_Shared_Core/90_Regression_Tests changes remain unreviewed and are not on main or live.
