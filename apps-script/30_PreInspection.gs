@@ -2827,9 +2827,10 @@ function tmv3_preInspectionDryRun(eventId) {
   })[0];
   if (!source) throw new Error('PI_AUTHORITATIVE_SOURCE_NOT_UNIQUE');
   const found = tmv3_findCalendarEventById_(cfg.primaryCalendarId, id);
-  if (!found || !found.event) return {status:'EVENT_NOT_ON_CF_PREINSPECTS',eventId:id,sideEffects:0};
-  const record = tmv3_calendarEvent_('PreInspection', cfg, source, found.event, {applyEligibility:false});
-  return tmv3_piDryRunRecord_(record, Date.now());
+  const out = (!found || !found.event) ? {status:'EVENT_NOT_ON_CF_PREINSPECTS',eventId:id,sideEffects:0} :
+    tmv3_piDryRunRecord_(tmv3_calendarEvent_('PreInspection', cfg, source, found.event, {applyEligibility:false}), Date.now());
+  Logger.log('PI_DRY_RUN=' + JSON.stringify(out));
+  return out;
 }
 
 /** Pure staged evaluation of a normalized record (see tmv3_preInspectionDryRun). */
