@@ -5,3 +5,4 @@
 - 2026-11-10: Inspector-owned fields 854, 852, 853 and 860 are unmanaged. Preserve the approved notification template.
 - 2026-11-11: PreInspection rebuild uses the 2026-11-11 live capture as behavioural baseline; preinspection-branch guards are layered on top. Release gate stays off pending verification.
 - 2026-11-11: r7 30_PreInspection.gs deployed live by the operator with the release gate off. Only the PreInspection module, its tests and docs are promoted to main; the preinspection branch's 10_Shared_Core/90_Regression_Tests changes remain unreviewed and are not on main or live.
+- 2026-11-11: Operator rule — reuse the OPEN Task for the visit; if none is open, create a new one (automatic RECREATE allowed after fresh complete history), but never when a Task was completed on the appointment day or when a completed Task is undated (REVIEW).

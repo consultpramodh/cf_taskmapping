@@ -485,7 +485,43 @@ const RUNS = [
   ['tmv3_reconcilePreInspectionPendingReview', []],
   ['tmv3_runPreInspectionAutomation', []]
 ];
-Object.entries(SCENARIOS).forEach(([name, scenario]) => {
+// Intentional change (operator rule 2026-11-11): no open Task -> create a new one.
+const RECREATE_CHANGED = new Set(['recreateBlocked']);
+check('NEW_RULE_NO_OPEN_TASK_RECREATES', () => {
+  const env = cycleEnv(REBUILT, Object.assign({}, SCENARIOS.recreateBlocked, {plans: {'evt0@google.com': [
+    [{plan: 'RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}],
+    [{plan: 'RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}],
+    [CONVERGED]]}}));
+  const r = env.ctx.tmv3_preInspectionAutomationCycle_({force: true});
+  assert.equal(r.writes, 1); assert.equal(r.status, 'COMPLETE');
+  assert.equal(r.results[0].recreateAuthorized, 'NO_OPEN_TASK_NEW_VISIT_OPERATOR_RULE_2026_11_11');
+  assert.equal(env.log.filter(e => e.kind === 'EXECUTE').length, 1);
+  assert.ok(env.log.some(e => e.kind === 'FETCH' && /tasks\/search/.test(e.url)), 'fresh history must be read before recreate');
+  const base = cycleEnv(BASELINE, SCENARIOS.recreateBlocked);
+  assert.match(base.ctx.tmv3_preInspectionAutomationCycle_({force: true}).results[0].error, /RECREATE_DISABLED/);
+  // Same-day completed Task in fresh history: no new Task.
+  const sameDay = cycleEnv(REBUILT, Object.assign({}, SCENARIOS.recreateBlocked, {plans: {'evt0@google.com': [
+    [{plan: 'RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}]]}}));
+  const ev = SCENARIOS.recreateBlocked.records[0];
+  sameDay.ctx.tmv3_getTaskById_ = id => ({'Task ID': String(id), 'Task Type ID': 105, 'Customer ID': '100', Status: 'Completed', Start: ev.start});
+  const sd = sameDay.ctx.tmv3_preInspectionAutomationCycle_({force: true});
+  assert.match(sd.results[0].error, /PI_SAME_DAY_COMPLETED_TASK_NO_RECREATE:10/); assert.equal(sd.writes, 0);
+  assert.equal(sameDay.log.filter(e => e.kind === 'EXECUTE').length, 0);
+  const undated = cycleEnv(REBUILT, Object.assign({}, SCENARIOS.recreateBlocked, {plans: {'evt0@google.com': [
+    [{plan: 'RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}]]}}));
+  undated.ctx.tmv3_getTaskById_ = id => ({'Task ID': String(id), 'Task Type ID': 105, 'Customer ID': '100', Status: 'Completed'});
+  assert.match(undated.ctx.tmv3_preInspectionAutomationCycle_({force: true}).results[0].error, /UNDATED_REVIEW_NO_RECREATE/);
+  // Older completed Task on another day: new Task allowed.
+  const older = cycleEnv(REBUILT, Object.assign({}, SCENARIOS.recreateBlocked, {plans: {'evt0@google.com': [
+    [{plan: 'RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}],
+    [{plan: 'RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}], [CONVERGED]]}}));
+  older.ctx.tmv3_getTaskById_ = id => ({'Task ID': String(id), 'Task Type ID': 105, 'Customer ID': '100', Status: 'Completed', Start: '2026-09-01T13:00:00-04:00'});
+  assert.equal(older.ctx.tmv3_preInspectionAutomationCycle_({force: true}).writes, 1);
+  const blocked = cycleEnv(REBUILT, Object.assign({}, SCENARIOS.recreateBlocked, {plans: {'evt0@google.com': [
+    [{plan: 'RECREATE', disposition: 'FULFILLED_NO_RECREATE', actions: ['RECREATE_TASK'], expectedCustomerId: '100', expectedRequestedByType: 'employee', expectedRequestedById: '15'}]]}}));
+  assert.match(blocked.ctx.tmv3_preInspectionAutomationCycle_({force: true}).results[0].error, /SAME_VISIT_FULFILLED/);
+});
+Object.entries(SCENARIOS).filter(([name]) => !RECREATE_CHANGED.has(name)).forEach(([name, scenario]) => {
   RUNS.forEach(([fn, args]) => {
     check('CYCLE_' + name + '_' + fn + '_' + JSON.stringify(args), () => {
       const run = src => {

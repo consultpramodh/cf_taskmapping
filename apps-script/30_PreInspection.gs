@@ -1098,19 +1098,36 @@ function tmv3_preInspectionCanonicalCacheTask_(task, canonical) {
   return verified;
 }
 
-/** Before CREATE: re-read complete fresh Customer history and re-plan on it. */
-function tmv3_preInspectionFreshHistoryBeforeCreate_(record, plan) {
+/** Complete, ownership-verified fresh Type 105 history for the plan's Customer (≤10 Tasks). */
+function tmv3_piFreshCustomerHistory_(plan) {
   const customer = tmv3_step4IdentityIndex_().customerById[String(plan.expectedCustomerId)];
   if (!customer) throw new Error('CREATE_CUSTOMER_NOT_IN_VERIFIED_CACHE');
   const ids = tmv3_searchPreInspectionTaskIdsForCustomer_(customer);
   if (ids.length > 10) throw new Error('CREATE_HISTORY_API_LIMIT_REVIEW_NO_CREATE');
-  ids.forEach(function(id) {
+  return ids.map(function(id) {
     const task = tmv3_getTaskById_(Number(id));
     if (String(task['Task ID']) !== String(id) || String(task['Customer ID']) !== String(plan.expectedCustomerId) ||
         Number(task['Task Type ID']) !== 105) throw new Error('CREATE_HISTORY_OWNERSHIP_FAILED_NO_CREATE');
     tmv3_upsertTaskCacheRow_(task);
+    return task;
   });
+}
+
+/** Before CREATE: re-read complete fresh Customer history and re-plan on it. */
+function tmv3_preInspectionFreshHistoryBeforeCreate_(record, plan) {
+  tmv3_piFreshCustomerHistory_(plan);
   return tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
+}
+
+/** Operator rule 2026-11-11: a completed (or undated completed) Task on the appointment day blocks a new Task. */
+function tmv3_piAssertNoSameDayCompletedTask_(record, history) {
+  if (!Array.isArray(history)) throw new Error('PI_RECREATE_FRESH_HISTORY_MISSING_NO_CREATE');
+  (history || []).forEach(function(task) {
+    if (!tmv3_taskIsCompleted_(task.Status)) return;
+    if (!task.Start) throw new Error('PI_COMPLETED_TASK_UNDATED_REVIEW_NO_RECREATE:' + task['Task ID']);
+    if (tmv3_sameLocalDay_(record.start, task.Start)) throw new Error('PI_SAME_DAY_COMPLETED_TASK_NO_RECREATE:' + task['Task ID']);
+  });
+  return true;
 }
 
 /** A completed Task proves THIS visit only with same-day timing at the same site. */
@@ -1937,15 +1954,23 @@ function tmv3_piReconcileAuthoritativeEvent_(cycle, record, one, doneKey) {
     if (one.optionalOrderEvidence.status === 'CACHE_REPAIRED') plans = tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
   }
   // F2 CREATE is re-planned on complete fresh Customer Task history.
+  let history = null;
   if (plans.length === 1 && !plans[0].blocker && tmv3_piPlanCreates_(plans[0])) {
-    plans = tmv3_preInspectionFreshHistoryBeforeCreate_(record, plans[0]);
+    history = tmv3_piFreshCustomerHistory_(plans[0]);
+    plans = tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
   }
   if (plans.length !== 1) throw new Error('MULTIPLE_CANONICAL_PLANS_NO_WRITE');
   const plan = plans[0];
 
   // F3 guards before any Task mutation.
-  if (!plan.blocker && Array.isArray(plan.actions) && plan.actions.indexOf(TMV3_STEP7_ACTION.RECREATE_TASK) >= 0)
-    throw new Error('PI_AUTOMATIC_RECREATE_DISABLED_REVIEW_HISTORY_FIRST');
+  // Operator rule 2026-11-11: reuse the OPEN Task for this visit; if none is open, create a new
+  // one — but never when a Task was already completed on the appointment day. RECREATE_TASK is
+  // planned only after the fresh complete history above shows no open Task.
+  if (!plan.blocker && Array.isArray(plan.actions) && plan.actions.indexOf(TMV3_STEP7_ACTION.RECREATE_TASK) >= 0) {
+    if (plan.disposition === 'FULFILLED_NO_RECREATE') throw new Error('PI_SAME_VISIT_FULFILLED_NO_RECREATE');
+    tmv3_piAssertNoSameDayCompletedTask_(record, history);
+    one.recreateAuthorized = 'NO_OPEN_TASK_NEW_VISIT_OPERATOR_RULE_2026_11_11';
+  }
   if (!plan.blocker && tmv3_piPlanTouchesTask_(plan)) tmv3_piAssertRequestedByPlan_(plan, record);
   if (!plan.blocker && tmv3_piPlanCreates_(plan)) one.orderStatusBeforeCreate = tmv3_preInspectionOrderBeforeCreate_(record, plan);
   one.plan = plan.plan; one.blocker = plan.blocker || ''; one.taskId = plan.taskId || '';
