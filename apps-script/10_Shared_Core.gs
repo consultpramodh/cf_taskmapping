@@ -8420,196 +8420,60 @@ function tmv3_taskIsCompleted_(
   ) !== -1;
 }
 
-function tmv3_taskDifferences_(
-  e,
-  cfg,
-  task,
-  order,
-  customer,
-  location
-) {
-  const issues =
-    [];
-
-  if (
-    tmv3_clean_(
-      task[
-        'Customer ID'
-      ]
-    ) &&
-    tmv3_clean_(
-      task[
-        'Customer ID'
-      ]
-    ) !==
-      tmv3_clean_(
-        customer[
-          'Customer ID'
-        ]
-      )
-  ) {
-    issues.push(
-      'Task customer differs'
-    );
+/**
+ * Google Apps Script — replace existing tmv3_taskDifferences_ in 10_Shared_Core.gs.
+ * PreInspection 2026-11-10-r1 targeted source fix.
+ * Preserves all other customer, location, SO and technician checks.
+ * Does not call Striven/Calendar, write to Sheets or mutate any source record.
+ */
+function tmv3_taskDifferences_(e, cfg, task, order, customer, location) {
+  const issues = [];
+  if (tmv3_clean_(task['Customer ID']) &&
+      tmv3_clean_(task['Customer ID']) !== tmv3_clean_(customer['Customer ID'])) {
+    issues.push('Task customer differs');
+  }
+  if (tmv3_clean_(task['Location ID']) &&
+      tmv3_clean_(task['Location ID']) !== tmv3_clean_(location['Location ID'])) {
+    issues.push('Task location differs');
+  }
+  if (cfg.orderRequired && tmv3_clean_(task['Order ID']) &&
+      tmv3_clean_(task['Order ID']) !== tmv3_clean_(order['Order ID'])) {
+    issues.push('Task ' + cfg.orderLabel + ' differs');
+  }
+  if (e.vertical === 'PreInspection' && tmv3_clean_(task['Order ID'])) {
+    issues.push('PreInspection task must not be attached to Sales Order');
   }
 
-  if (
-    tmv3_clean_(
-      task[
-        'Location ID'
-      ]
-    ) &&
-    tmv3_clean_(
-      task[
-        'Location ID'
-      ]
-    ) !==
-      tmv3_clean_(
-        location[
-          'Location ID'
-        ]
-      )
-  ) {
-    issues.push(
-      'Task location differs'
-    );
+  const taskStart = tmv3_clean_(task['Start']);
+  const taskDue = tmv3_clean_(task['Due']);
+  // Compare actual instants to the MINUTE, rather than searching an ISO date
+  // string inside normalized text. The former code created false discrepancies.
+  if (taskStart && !tmv3_sameMinute_(e.start, taskStart)) {
+    issues.push('Start date/time differs');
+  }
+  if (taskDue && !tmv3_sameMinute_(e.end, taskDue)) {
+    issues.push('Due date/time differs');
   }
 
-  if (
-    cfg.orderRequired &&
-    tmv3_clean_(
-      task[
-        'Order ID'
-      ]
-    ) &&
-    tmv3_clean_(
-      task[
-        'Order ID'
-      ]
-    ) !==
-      tmv3_clean_(
-        order[
-          'Order ID'
-        ]
-      )
-  ) {
-    issues.push(
-      'Task ' +
-      cfg.orderLabel +
-      ' differs'
-    );
+  const assigned = tmv3_norm_(task['Assignees']);
+  if (e.vertical === 'Service' && e.technician &&
+      assigned.indexOf(tmv3_norm_(e.technician)) === -1) {
+    issues.push('Technician assignment differs');
   }
-
-  if (
-    e.vertical ===
-      'PreInspection' &&
-    tmv3_clean_(
-      task[
-        'Order ID'
-      ]
-    )
-  ) {
-    issues.push(
-      'PreInspection task must not be attached to Sales Order'
-    );
-  }
-
-  const taskStart =
-    tmv3_clean_(
-      task[
-        'Start'
-      ]
-    );
-
-  const taskDue =
-    tmv3_clean_(
-      task[
-        'Due'
-      ]
-    );
-
-  if (
-    taskStart &&
-    tmv3_norm_(
-      taskStart
-    ).indexOf(
-      tmv3_date_(
-        e.start
-      )
-    ) === -1
-  ) {
-    issues.push(
-      'Start date/time differs'
-    );
-  }
-
-  if (
-    taskDue &&
-    tmv3_norm_(
-      taskDue
-    ).indexOf(
-      tmv3_date_(
-        e.end
-      )
-    ) === -1
-  ) {
-    issues.push(
-      'Due date/time differs'
-    );
-  }
-
-  const assigned =
-    tmv3_norm_(
-      task[
-        'Assignees'
-      ]
-    );
-
-  if (
-    e.vertical ===
-      'Service' &&
-    e.technician &&
-    assigned.indexOf(
-      tmv3_norm_(
-        e.technician
-      )
-    ) === -1
-  ) {
-    issues.push(
-      'Technician assignment differs'
-    );
-  }
-
-  if (
-    e.vertical ===
-    'PreInspection'
-  ) {
-    const pools =
-      tmv3_norm_(
-        task[
-          'Pools'
-        ]
-      );
-
-    if (
-      pools &&
-      pools.indexOf(
-        tmv3_norm_(
-          cfg.defaultPoolName
-        )
-      ) === -1 &&
-      pools.indexOf(
-        String(
-          cfg.defaultPoolId
-        )
-      ) === -1
-    ) {
-      issues.push(
-        'Pre-Inspection Pool 8 missing'
-      );
+  if (e.vertical === 'PreInspection') {
+    // Canonicalize only the known 'Preinspection' / 'Pre-Inspection'
+    // spelling difference in the read-only text cache. Task write authorization
+    // must continue to verify the actual Striven pool ID 8.
+    function canonicalPool(value) {
+      return tmv3_norm_(value).replace(/\bpre\s+inspection\b/g, 'preinspection');
+    }
+    const pools=canonicalPool(task['Pools']);
+    const expected=canonicalPool(cfg.defaultPoolName);
+    if (!pools || (expected && pools.indexOf(expected) === -1 &&
+        !pools.split(' ').includes(String(cfg.defaultPoolId)))) {
+      issues.push('Pre-Inspection Pool 8 missing');
     }
   }
-
   return issues;
 }
 
@@ -18884,6 +18748,12 @@ function onOpen() {
   const ui = SpreadsheetApp.getUi();
 
   ui.createMenu('Task Mapping V3')
+    .addSubMenu(
+      ui.createMenu('Pre-Inspection')
+        .addItem('1. Run Read-Only Tests', 'tmv3_preInspectionRunAllReadOnlyTests')
+        .addItem('2. Refresh Operator View (Sheet Write)', 'tmv3_preInspectionRefreshOperatorView')
+        .addItem('3. Run Automation (Live Changes)', 'tmv3_runPreInspectionAutomation')
+    )
     .addSubMenu(
       ui.createMenu('Operations')
         .addItem('Step 1 — Refresh Calendar Intake', 'tmv3_step1CalendarRun')

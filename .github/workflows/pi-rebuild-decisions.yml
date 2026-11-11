@@ -1,0 +1,33 @@
+name: Pre-Inspection rebuild checks
+on:
+  push:
+    branches: [preinspection]
+    paths:
+      - apps-script/**
+      - tests/preinspection/**
+      - .github/workflows/pi-rebuild-decisions.yml
+  pull_request:
+    branches: [main, preinspection]
+    paths:
+      - apps-script/**
+      - tests/preinspection/**
+      - .github/workflows/pi-rebuild-decisions.yml
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Apps Script syntax
+        run: for f in apps-script/*.gs; do node --check < "$f" || exit 1; done
+      - name: Staged decision fixtures
+        run: node tests/preinspection/rebuild-decisions.test.cjs
+      - name: Sales Order pre-create guard
+        run: node tests/preinspection/order-guard.test.cjs
+      - name: Live-baseline equivalence, gate and safety checks
+        run: node tests/preinspection/rebuild-equivalence.test.cjs
