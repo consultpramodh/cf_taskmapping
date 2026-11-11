@@ -1465,19 +1465,33 @@ function tmv3_piAssertRequestedByEmployeeShape_(requestedBy) {
   return true;
 }
 
-/** Plan requester must equal the employee mapped from this event's verified owning Calendar. */
+/** Requested By must be an Employee proven for THIS event: the verified owning-Calendar
+ * employee, or the event creator uniquely matched to one Striven Employee (shared Step 7
+ * rule, used by existing Tasks). A Customer Contact or unmatched person is never accepted. */
 function tmv3_piAssertRequestedByPlan_(plan, record) {
   tmv3_piRequestedByContract_();
-  const owner = tmv3_piVerifiedOwnerEmployee_(record);
-  if (owner.status !== 'MATCHED' || !Number.isSafeInteger(owner.employeeId))
-    throw new Error(owner.blocker || 'PI_REQUESTED_BY_OWNER_UNVERIFIED_NO_WRITE');
   const type = String(plan && plan.expectedRequestedByType || '').trim().toLowerCase();
   const rawId = plan && plan.expectedRequestedById;
   const id = Number(rawId);
+  const owner = tmv3_piVerifiedOwnerEmployee_(record);
+  const creatorId = tmv3_piCreatorEmployeeId_(record);
+  if (owner.status !== 'MATCHED' && !creatorId)
+    throw new Error(owner.blocker || 'PI_REQUESTED_BY_OWNER_UNVERIFIED_NO_WRITE');
   if (type !== 'employee' || !tmv3_piPositiveId_(rawId || '') || !Number.isSafeInteger(id) || id <= 0)
     throw new Error('PI_EXPECTED_REQUESTED_BY_EMPLOYEE_NOT_PROVEN_NO_WRITE');
-  if (id !== owner.employeeId) throw new Error('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE');
+  if (id !== owner.employeeId && id !== creatorId)
+    throw new Error('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE');
   return true;
+}
+
+/** Employee ID uniquely matched from the event creator/organizer email, or null. */
+function tmv3_piCreatorEmployeeId_(record) {
+  if (!record || !record.organizer) return null;
+  try {
+    const r = tmv3_resolveOrganizerEmployee_(record);
+    const id = Number(r && r.status === 'MATCHED' && r.employee && r.employee.id);
+    return Number.isSafeInteger(id) && id > 0 ? id : null;
+  } catch (e) { return null; }
 }
 
 /** Striven Sales Order status IDs paired with their names (branch guard: both must agree). */
