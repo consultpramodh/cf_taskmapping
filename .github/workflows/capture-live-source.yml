@@ -38,7 +38,27 @@ jobs:
           test -n "$CLASPRC_JSON" || { echo "Missing secret CLASPRC_JSON"; exit 1; }
           test -n "$APPS_SCRIPT_ID" || { echo "Missing variable APPS_SCRIPT_ID"; exit 1; }
           umask 077
-          printf '%s' "$CLASPRC_JSON" > "$HOME/.clasprc.json"
+          # Accept both clasp 2.x ({"token":...}) and clasp 3.x ({"tokens":{"default":...}}) login files;
+          # clasp 2.4.2 only reads the 2.x shape, so convert 3.x credentials when needed.
+          printf '%s' "$CLASPRC_JSON" | jq -e . >/dev/null || { echo "CLASPRC_JSON is not valid JSON"; exit 1; }
+          printf '%s' "$CLASPRC_JSON" | jq '
+            if has("token") then .
+            elif (.tokens.default? // null) != null then
+              (.tokens.default) as $t |
+              { token: { access_token: ($t.access_token // ""), refresh_token: $t.refresh_token,
+                         scope: ($t.scope // ""), token_type: ($t.token_type // "Bearer"),
+                         expiry_date: ($t.expiry_date // 0) },
+                oauth2ClientSettings: { clientId: $t.client_id, clientSecret: $t.client_secret,
+                                        redirectUri: "http://localhost" },
+                isLocalCreds: false }
+            else error("Unrecognised clasprc format (expected token or tokens.default)") end
+          ' > "$HOME/.clasprc.json" || {
+            echo "Key paths found in CLASPRC_JSON (names only, no values):"
+            printf '%s' "$CLASPRC_JSON" | jq -r '[paths(scalars) | map(tostring) | join(".")] | .[]'
+            exit 1
+          }
+          jq -e '.token.refresh_token and .oauth2ClientSettings.clientId' "$HOME/.clasprc.json" >/dev/null \
+            || { echo "Credentials missing refresh_token or client id"; exit 1; }
           mkdir -p "$RUNNER_TEMP/live"
           printf '{"scriptId":"%s","rootDir":"%s","fileExtension":"gs"}' \
             "$APPS_SCRIPT_ID" "$RUNNER_TEMP/live" > "$RUNNER_TEMP/live/.clasp.json"
