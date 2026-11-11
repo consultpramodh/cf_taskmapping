@@ -52,7 +52,11 @@ jobs:
                                         redirectUri: "http://localhost" },
                 isLocalCreds: false }
             else error("Unrecognised clasprc format (expected token or tokens.default)") end
-          ' > "$HOME/.clasprc.json"
+          ' > "$HOME/.clasprc.json" || {
+            echo "Key paths found in CLASPRC_JSON (names only, no values):"
+            printf '%s' "$CLASPRC_JSON" | jq -r '[paths(scalars) | map(tostring) | join(".")] | .[]'
+            exit 1
+          }
           jq -e '.token.refresh_token and .oauth2ClientSettings.clientId' "$HOME/.clasprc.json" >/dev/null \
             || { echo "Credentials missing refresh_token or client id"; exit 1; }
           mkdir -p "$RUNNER_TEMP/live"
