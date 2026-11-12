@@ -23,7 +23,9 @@ function check(name, fn) {
   checks++;
   try { fn(); } catch (e) { failures.push(name + ': ' + String(e && e.message || e).slice(0, 600)); }
 }
-const CLOSE = (f, t) => f === '30_PreInspection.gs' ? t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;') : t;
+const BASELINE_RULES = t => t.replace(/^var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;/m, 'var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = false;')
+  .replace(/^var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;/m, 'var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = false;');
+const CLOSE = (f, t) => f === '30_PreInspection.gs' ? BASELINE_RULES(t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;')) : t;
 function load(source, opts) {
   opts = Object.assign({transform: CLOSE}, opts || {});
   return h.load(SHARED, Object.assign({fixedNow: NOW, overrides: {'30_PreInspection.gs': source}}, opts));
@@ -133,7 +135,7 @@ check('FROZEN_RENDERER_FINGERPRINT', () => {
 
 check('RELEASED_WITH_CREATOR_EMAILS_OFF', () => {
   assert.match(REBUILT, /^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;$/m);
-  assert.match(REBUILT, /^var TMV3_PI_CREATOR_EMAILS_ENABLED = false;$/m);
+  assert.match(REBUILT, /^var TMV3_PI_CREATOR_EMAILS_ENABLED = true;$/m);
 });
 
 // ---------------------------------------------------------------- 2 pure functions
@@ -398,8 +400,8 @@ check('GATE_CLOSED_ENTRY_POINTS_MATCH_AND_DO_NOTHING', () => {
 });
 
 // ---------------------------------------------------------------- 6 gate OPEN: full cycle scenarios with stubbed V3 core
-const OPEN = (f, t) => f === '30_PreInspection.gs' ? t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = (?:false|true);/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = true;')
-  .replace(/^var TMV3_PI_CREATOR_EMAILS_ENABLED = false;/m, 'var TMV3_PI_CREATOR_EMAILS_ENABLED = true;') : t;
+const OPEN = (f, t) => f === '30_PreInspection.gs' ? BASELINE_RULES(t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = (?:false|true);/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = true;')
+  .replace(/^var TMV3_PI_CREATOR_EMAILS_ENABLED = false;/m, 'var TMV3_PI_CREATOR_EMAILS_ENABLED = true;')) : t;
 function cycleEnv(src, scenario) {
   return cycleEnvOn(load(src, {transform: OPEN}), scenario);
 }
@@ -586,7 +588,7 @@ check('NEW_DRY_RUN_IS_PURE', () => {
 });
 
 check('NEW_CREATOR_EMAILS_OFF_AND_LINK_ONLY_PLAN_CONVERGED', () => {
-  const asShipped = (f, x) => x; // gate ON, creator emails OFF, exactly as committed
+  const asShipped = (f, x) => f === '30_PreInspection.gs' ? BASELINE_RULES(x.replace(/^var TMV3_PI_CREATOR_EMAILS_ENABLED = true;/m, 'var TMV3_PI_CREATOR_EMAILS_ENABLED = false;')) : x; // emails switched OFF
   const sc = SCENARIOS.missingDetailsEmail;
   const run = (fn) => { const env = load(REBUILT, {transform: asShipped}); Object.assign(env, cycleEnvOn(env, sc)); return [env.ctx.tmv3_preInspectionAutomationCycle_({force: true}), env.log]; };
   const [r, log] = run();
@@ -614,6 +616,39 @@ check('NEW_COMPLETED_TASK_NO_ALERT_AND_PLAIN_ALERT', () => {
   assert.match(env2.ctx.tmv3_piAlertExplain_('Fresh Task state is no longer OPEN.').what, /no longer Open/);
   assert.match(env2.ctx.tmv3_piAlertExplain_('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE').what, /Requested By/);
   assert.match(env2.ctx.tmv3_piAlertExplain_('weird').what, /changed nothing/);
+});
+
+check('NEW_OFF_SHARED_REP_CALENDAR_NOTICES', () => {
+  const env = load(REBUILT, {transform: (f, x) => f === '30_PreInspection.gs' ? x : x}); // as shipped: rules ON
+  const c = env.ctx, sent = [];
+  const STEPHEN = 'classicfireplace.ca_c20qcqfhvjbv784asn9pvuiaf4@group.calendar.google.com';
+  const mk = (id, title, desc, creator, loc) => ({getId: () => id + '@google.com', isAllDayEvent: () => false, __r: Object.assign(rec(0), {
+    eventId: id + '@google.com', title, rawDescription: desc, descriptionClean: desc, creator, location: loc,
+    calendarRole: 'SECONDARY_OWNER', sourceCalendarRoles: ['SECONDARY_OWNER'], calendarId: STEPHEN, organizerCalendarId: STEPHEN,
+    calendarCreatedAt: new Date(NOW - 5 * 86400000).toISOString(), fingerprint: 'f-' + id, orderNumber: '', customerNumber: ''})});
+  const repEvents = [mk('rep1', 'Pre-inspection Jane Doe 416-555-0199', '', 'adam@classicfireplace.ca', '1 Main St'),
+    mk('rep2', 'Service call furnace', '', 'adam@classicfireplace.ca', '2 Main St'),
+    mk('rep3', 'Team meeting', '', 'adam@classicfireplace.ca', ''),
+    mk('shared1', 'Pre-inspection Bob', '', 'adam@classicfireplace.ca', '3 Main St')];
+  c.CalendarApp = {getCalendarById: id => id === PRIMARY ? {getEvents: () => [{getId: () => 'shared1@google.com'}]} :
+    id === STEPHEN ? {getEvents: () => repEvents} : null};
+  c.tmv3_calendarEvent_ = (v, cfg, src, ev) => JSON.parse(JSON.stringify(ev.__r));
+  c.tmv3_audit_ = () => {};
+  c.tmv3_rows_ = () => CUSTOMERS;
+  c.tmv3_piSendMissingDetailsAfterRelease_ = r => { sent.push(c.tmv3_preInspectionMissingDetailAssessment_(r)); return {status: 'SENT', sent: 1}; };
+  const out = c.tmv3_piNotifyOffSharedCandidates_({maxLiveChecks: 0});
+  assert.equal(out.candidates, 1); assert.equal(out.notified, 1);
+  assert.equal(sent[0].eventId, 'rep1@google.com');
+  const codes = sent[0].missing.map(m => m.code);
+  assert.ok(codes.includes('SHARED_CALENDAR') && codes.includes('CUSTOMER_NUMBER') && codes.includes('SALES_ORDER'), codes.join(','));
+  assert.equal(out.sourceErrors.length, 2, 'Jay/Karen unavailable reported');
+  // SO missing is notifiable on CF Preinspects events too.
+  const a = c.tmv3_preInspectionMissingDetailAssessment_(Object.assign(rec(0), {title: '12345 - Sample Customer - (416) 555-0100', rawDescription: '', descriptionClean: '', orderNumber: '', location: '1 Main St, Toronto'}));
+  assert.deepEqual(a.missing.map(m => m.code), ['SALES_ORDER']);
+  // Email template unchanged; the new row has its own 'should be' text.
+  assert.equal(c.tmv3_piRendererFingerprint_(), 'b77a1a07');
+  const html = c.tmv3_preInspectionComparisonRowsHtml_({title: 'x'}, {missing: [{code: 'SHARED_CALENDAR', field: 'Guests', message: 'CF Preinspects calendar not added as a guest'}]});
+  assert.match(html, /Add the CF Preinspects calendar as a guest/);
 });
 
 // ---------------------------------------------------------------- report
