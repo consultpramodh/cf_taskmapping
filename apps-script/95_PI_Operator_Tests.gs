@@ -1,6 +1,7 @@
 // Google Apps Script — PreInspection operator tools. Keep ONLY ONE copy of this file in the project.
 // Never edit 00_Configuration or 30_PreInspection to test. Run from the editor (no arguments):
 //
+//   piTest_EndToEndCheck()            READ-ONLY: checks the whole live setup, PASS / WARN / FAIL per item
 //   piTest_SimulateSlot()             READ-ONLY: emulates the 08:00/13:00/17:00 trigger for all events
 //   piTest_PreviewNotices()           READ-ONLY: who would get a missing-details email now
 //   piTest_SendTestEmails()           sends next-slot missing-details emails to Pramodh only, TEST subject
@@ -414,4 +415,132 @@ function piTest_WRITE_ClearResolvedHeld() {
     remaining:Object.keys(store.getProperties()).length, details:cleared};
   Logger.log('PI_HELD_CLEARED=' + JSON.stringify(out));
   return out;
+}
+
+/** READ-ONLY end-to-end check of the live setup. Each line is PASS / WARN / FAIL with what to do.
+ * Writes nothing to Striven, Calendar, email or sheets (the slot simulation restores its state). */
+function piTest_EndToEndCheck() {
+  const rows = [];
+  const add = function(area, status, detail, fix) { rows.push({area:area, status:status, detail:detail, fix:fix || ''}); };
+  const safe = function(area, fn) { try { fn(); } catch (e) { add(area, 'FAIL', String(e && e.message || e).slice(0, 200), 'See detail'); } };
+  const src = function(fn) { try { return String(fn); } catch (e) { return ''; } };
+
+  // 1. Code version: the files pasted into the project are the current ones.
+  safe('Code: 30_PreInspection', function() {
+    const ok = typeof tmv3_piAddVisitQuestion_ === 'function' && typeof tmv3_piCreatorRecipients_ === 'function' &&
+      src(tmv3_piSendMissingDetailsAfterRelease_).indexOf('piOffSharedCandidate === true') >= 0;
+    add('Code: 30_PreInspection', ok ? 'PASS' : 'FAIL', ok ? 'current version' : 'older version in the project', 'Paste the latest 30_PreInspection');
+  });
+  safe('Code: 10_Shared_Core', function() {
+    const ok = typeof tmv3_statusNotePut_ === 'function' && typeof TMV3_SD_ORDER_BACKFILL_RETIRED !== 'undefined' &&
+      src(tmv3_operationNormalizeCalendarTitle_).indexOf('PROPAGATED_FROM_ORGANIZER_VERIFIED') >= 0;
+    add('Code: 10_Shared_Core', ok ? 'PASS' : 'FAIL', ok ? 'current version' : 'older version in the project', 'Paste the latest 10_Shared_Core');
+  });
+  safe('Code: 40_Installation', function() {
+    const ok = src(tmv3_installStandardDailyTriggers).indexOf('tmv3_statusNotePut_') >= 0;
+    add('Code: 40_Installation', ok ? 'PASS' : 'WARN', ok ? 'current version' : 'still writes status notes to Script Properties', 'Paste the latest 40_Installation');
+  });
+  safe('Code: no old operator file', function() {
+    const old = typeof piTest_DryRun === 'function' || typeof piTest_WRITE_Reconcile === 'function';
+    add('Code: no old operator file', old ? 'FAIL' : 'PASS', old ? 'an old copy of the operator tests is still in the project' : 'one operator file',
+      'Delete the old operator block (search every file for "operator test runner")');
+  });
+  safe('Email template', function() {
+    tmv3_piAssertLockedStandard_();
+    add('Email template', 'PASS', 'approved template unchanged (fingerprint ' + TMV3_HARD_RULES.PreInspection.notificationRendererFingerprint + ')');
+  });
+
+  // 2. Switches.
+  safe('Switches', function() {
+    const on = function(v) { return v === true ? 'ON' : 'OFF'; };
+    const live = TMV3.MODE === 'PRODUCTION_WRITE' && TMV3_PI_CLEANED_RELEASE_APPROVED === true;
+    add('Switch: automation writes', live ? 'PASS' : 'FAIL', 'mode ' + TMV3.MODE + ', release gate ' + on(TMV3_PI_CLEANED_RELEASE_APPROVED),
+      'Set TMV3_PI_CLEANED_RELEASE_APPROVED = true in 30');
+    const mail = TMV3.OPERATIONS.preInspectionMissingDetailEmailsEnabled === true && TMV3_PI_CREATOR_EMAILS_ENABLED === true;
+    add('Switch: missing-details emails', mail ? 'PASS' : 'FAIL', 'config ' + on(TMV3.OPERATIONS.preInspectionMissingDetailEmailsEnabled) +
+      ', 30 ' + on(TMV3_PI_CREATOR_EMAILS_ENABLED), 'Turn both on');
+    add('Switch: emails for bookings missing CF Preinspects', TMV3_PI_OFF_SHARED_NOTICES_ENABLED === true ? 'PASS' : 'WARN', on(TMV3_PI_OFF_SHARED_NOTICES_ENABLED));
+    add('Switch: YES/NO box', TMV3_PI_VISIT_QUESTIONS_ENABLED === true ? 'PASS' : 'WARN', on(TMV3_PI_VISIT_QUESTIONS_ENABLED),
+      TMV3_PI_VISIT_QUESTIONS_ENABLED === true ? '' : 'Off by choice until approved: set TMV3_PI_VISIT_QUESTIONS_ENABLED = true in 30');
+    add('Switch: Steve + Colleen paired', tmv3_piCreatorRecipients_('steve@classicfireplace.ca').length === 2 ? 'PASS' : 'FAIL',
+      tmv3_piCreatorRecipients_('steve@classicfireplace.ca').join(', '));
+  });
+
+  // 3. Triggers: exactly the standard daily schedule, no duplicates, nothing obsolete.
+  safe('Triggers', function() {
+    const schedule = tmv3_standardDailySchedule_();
+    const expected = [];
+    schedule.verticals.forEach(function(v) {
+      const prefix = v === 'PreInspection' ? 'preInspection' : v.toLowerCase();
+      schedule.hours.forEach(function(h) { expected.push('tmv3_' + prefix + 'Check' + ('0' + h).slice(-2) + '00'); });
+    });
+    const have = {};
+    ScriptApp.getProjectTriggers().forEach(function(t) { const h = t.getHandlerFunction(); have[h] = (have[h] || 0) + 1; });
+    const missing = expected.filter(function(h) { return !have[h]; });
+    const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh'; });
+    const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh'; });
+    const pi = ['tmv3_preInspectionCheck0800', 'tmv3_preInspectionCheck1300', 'tmv3_preInspectionCheck1700'].filter(function(h) { return !have[h]; });
+    add('Triggers: PreInspection 08:00 / 13:00 / 17:00', pi.length ? 'FAIL' : 'PASS', pi.length ? 'missing ' + pi.join(', ') : 'all three installed',
+      'Run tmv3_installStandardDailyTriggers');
+    add('Triggers: all workflows', missing.length || dupes.length ? 'WARN' : 'PASS',
+      'expected ' + expected.length + ', missing [' + missing.join(', ') + '], duplicated [' + dupes.join(', ') + ']', 'Run tmv3_installStandardDailyTriggers');
+    add('Triggers: nothing extra', extra.length ? 'WARN' : 'PASS', extra.length ? 'extra: ' + extra.join(', ') : 'none', 'Delete the extra triggers listed');
+    add('Triggers: sheet refresh', (have.tmv3_scheduledSheetRefresh || 0) === 3 ? 'PASS' : 'WARN', (have.tmv3_scheduledSheetRefresh || 0) + ' of 3');
+  });
+
+  // 4. Calendars readable.
+  safe('Calendars', function() {
+    const bad = [];
+    let n = 0;
+    ['PreInspection', 'Install', 'Delivery', 'Service'].forEach(function(v) {
+      const cfg = TMV3.VERTICALS[v];
+      const ids = tmv3_verticalCalendars_(v, cfg).map(function(c) { return c.calendarId; })
+        .concat(v === 'PreInspection' ? (cfg.secondaryCalendarIds || []) : []);
+      ids.forEach(function(id) { n++; let cal = null; try { cal = CalendarApp.getCalendarById(id); } catch (e) {} if (!cal) bad.push(v + ': ' + id); });
+    });
+    add('Calendars readable', bad.length ? 'FAIL' : 'PASS', bad.length ? bad.join('; ') : n + ' calendars', 'Share the listed calendars with the script owner');
+  });
+
+  // 5. YES/NO web app.
+  safe('Web app', function() {
+    const p = PropertiesService.getScriptProperties();
+    const url = p.getProperty('TMV3_PI_CONFIRM_WEBAPP_URL') || '';
+    add('Web app URL', /^https:\/\/script\.google\.com\/.+\/exec$/.test(url) ? 'PASS' : 'FAIL', url ? url.replace(/\/s\/[^/]+\//, '/s/…/') : 'not set',
+      'Deploy → Web app, then set TMV3_PI_CONFIRM_WEBAPP_URL to the /exec URL');
+    add('Web app signing key', p.getProperty('TMV3_PI_CONFIRM_SECRET') ? 'PASS' : 'WARN', p.getProperty('TMV3_PI_CONFIRM_SECRET') ? 'present' : 'created on first send');
+    const answers = Object.keys(p.getProperties()).filter(function(k) { return /^TMV3_PI_CONFIRM_TEST_/.test(k); }).length;
+    add('Web app click test', answers ? 'PASS' : 'WARN', answers ? answers + ' test answer(s) recorded' : 'no test click recorded', 'Run piTest_SendQuestionTest and click a button');
+  });
+
+  // 6. Striven connection and budget.
+  safe('Striven', function() {
+    const b = tmv3_strivenApiBudgetStatus_();
+    add('Striven API budget', b.exhausted ? 'FAIL' : (b.limitMode === 'ENFORCED' && b.remaining < 200) || b.count > 0.8 * b.planDailyLimit ? 'WARN' : 'PASS', 'used ' + b.count + ' today' + (b.limitMode === 'ENFORCED' ? ', remaining ' + b.remaining : ' (tracking only; Striven plan limit ' + b.planDailyLimit + '/day)'),
+      b.exhausted ? 'Daily limit reached; resumes after reset' : '');
+    const pr = PropertiesService.getScriptProperties();
+    add('Striven credentials', pr.getProperty('CLIENT_ID') && pr.getProperty('CLIENT_SECRET') ? 'PASS' : 'FAIL', 'CLIENT_ID / CLIENT_SECRET', 'Restore the Striven credentials');
+  });
+
+  // 7. Script Properties stay clean.
+  safe('Script Properties', function() {
+    const props = PropertiesService.getScriptProperties().getProperties();
+    const today = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+    const upcoming = piTest_upcomingEventHashes_();
+    const junk = Object.keys(props).filter(function(k) { return piTest_propertyClass_(k, props[k], today, upcoming).cls === 'JUNK'; }).length;
+    add('Script Properties', junk ? 'WARN' : 'PASS', Object.keys(props).length + ' total, ' + junk + ' junk', 'Run piTest_WRITE_CleanupProperties');
+  });
+
+  // 8. Dry run of a scheduled slot (no writes, no emails).
+  safe('Slot simulation', function() {
+    const sim = piTest_SimulateSlot();
+    const blocked = (sim.events || []).filter(function(e) { return e.outcome === 'BLOCKED'; }).length;
+    add('Slot simulation', sim.status !== 'SIMULATED_NO_WRITES' ? 'FAIL' : blocked ? 'WARN' : 'PASS',
+      (sim.events || []).length + ' events, would write ' + sim.wouldWriteTasks + ' Task(s), send ' + sim.wouldSendEmails + ' email(s), alert ' +
+      sim.wouldAlert + ', blocked ' + blocked + (sim.error ? ', error ' + sim.error : ''), blocked ? 'See PI_SIM_EVENT lines for the blocked events' : '');
+  });
+
+  const count = {PASS:0, WARN:0, FAIL:0};
+  rows.forEach(function(r) { count[r.status]++; Logger.log('PI_E2E ' + r.status + ' | ' + r.area + ' | ' + r.detail + (r.status !== 'PASS' && r.fix ? ' | FIX: ' + r.fix : '')); });
+  Logger.log('PI_E2E_SUMMARY=' + JSON.stringify(count));
+  return {summary:count, rows:rows};
 }
