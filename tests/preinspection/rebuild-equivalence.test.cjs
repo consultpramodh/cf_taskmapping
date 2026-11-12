@@ -15,6 +15,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const SHARED = process.env.SHARED_DIR || path.join(ROOT, 'apps-script');
 const BASELINE = fs.readFileSync(path.join(__dirname, 'baseline', '30_PreInspection.live-2026-11-11.gs'), 'utf8');
 const REBUILT = fs.readFileSync(path.join(ROOT, 'apps-script', '30_PreInspection.gs'), 'utf8');
+const REGRESSION = fs.readFileSync(path.join(__dirname, 'baseline', '90_Regression_Tests.live-2026-11-11.gs'), 'utf8');
 const NOW = Date.parse('2026-11-10T14:05:00Z'); // Tuesday 09:05 Toronto
 
 let checks = 0;
@@ -29,7 +30,8 @@ const BASELINE_RULES = t => t.replace(/^var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT
 const CLOSE = (f, t) => f === '30_PreInspection.gs' ? BASELINE_RULES(t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;')) : t;
 function load(source, opts) {
   opts = Object.assign({transform: CLOSE}, opts || {});
-  return h.load(SHARED, Object.assign({fixedNow: NOW, overrides: {'30_PreInspection.gs': source}}, opts));
+  // The V3 regression suite was removed from live on 2026-11-12; it stays a test fixture here.
+  return h.load(SHARED, Object.assign({fixedNow: NOW, overrides: {'30_PreInspection.gs': source, '90_Regression_Tests.gs': REGRESSION}}, opts));
 }
 function outcome(fn) {
   try { return {ok: JSON.parse(JSON.stringify(fn() === undefined ? null : fn()))}; }
@@ -548,7 +550,7 @@ Object.entries(SCENARIOS).filter(([name]) => !RECREATE_CHANGED.has(name)).forEac
 
 // ---------------------------------------------------------------- 7 V3 regression entry points: identical outcomes
 check('V3_REGRESSION_SUITE_OUTCOMES_UNCHANGED', () => {
-  const src = fs.readFileSync(path.join(SHARED, '90_Regression_Tests.gs'), 'utf8');
+  const src = REGRESSION;
   const names = (src.match(/^function (tmv3_[A-Za-z0-9_]*)\s*\(\)/mg) || []).map(s => s.replace(/^function /, '').replace(/\s*\(\)$/, ''))
     .filter(n => !/^tmv3_(update|compare|old|v3|regressionKey)/.test(n));
   assert.ok(names.length >= 15);

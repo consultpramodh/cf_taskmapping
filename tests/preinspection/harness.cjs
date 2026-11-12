@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ORDER = ['00_Configuration.gs','10_Shared_Core.gs','20_Master_Triggers.gs',
-  '30_PreInspection.gs','40_Installation.gs','50_Delivery.gs','60_Service.gs','90_Regression_Tests.gs'];
+  '30_PreInspection.gs','40_Installation.gs','50_Delivery.gs','60_Service.gs','70_Contractor_Weekly.gs','90_Regression_Tests.gs'];
 
 function formatDate(date, tz, pattern) {
   const d = date instanceof Date ? date : new Date(date);

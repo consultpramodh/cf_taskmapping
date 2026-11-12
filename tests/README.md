@@ -1,6 +1,6 @@
 # Tests
 
-Apps Script regression functions live in `apps-script/90_Regression_Tests.gs` and run inside Apps Script.
+The V3 regression suite (`90_Regression_Tests.gs`) was removed from the live project on 2026-11-12; a copy is kept as a test fixture in `tests/preinspection/baseline/`. Node tests in `tests/preinspection/` run in CI.
 
 Standalone Node checks (no network, no Google services) run in CI via `.github/workflows/pi-rebuild-decisions.yml`:
 
