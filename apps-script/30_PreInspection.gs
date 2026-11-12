@@ -1989,10 +1989,13 @@ function tmv3_piPendingRemove_(cycle, eventId) {
 
 /** Stage C: re-queue pending events still in scope; drop those no longer PreInspection. */
 function tmv3_piRecoverPendingEvents_(cycle, records) {
+  const today = new Date(cycle.now); today.setHours(0, 0, 0, 0);
   cycle.pending.slice().forEach(function(id) {
     if (records.some(function(r) { return r.eventId === id; })) return;
     try {
       const recovered = tmv3_preInspectionRecoveryRecord_(id);
+      // Past appointments are history: drop them from the queue instead of re-running them.
+      if (new Date(recovered.start) < today) { tmv3_piPendingRemove_(cycle, id); return; }
       if (recovered.calendarRole === 'PRIMARY_SHARED' ||
           tmv3_preInspectionClassifyLikely_(recovered, TMV3.VERTICALS.PreInspection).status === 'EXPLICIT_PREINSPECTION') records.push(recovered);
       else tmv3_piPendingRemove_(cycle, id);

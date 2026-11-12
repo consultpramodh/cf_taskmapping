@@ -31,3 +31,5 @@ jobs:
         run: node tests/preinspection/order-guard.test.cjs
       - name: Live-baseline equivalence, gate and safety checks
         run: node tests/preinspection/rebuild-equivalence.test.cjs
+      - name: Calendar title writer (organizer-first)
+        run: node tests/preinspection/calendar-title-writer.test.cjs

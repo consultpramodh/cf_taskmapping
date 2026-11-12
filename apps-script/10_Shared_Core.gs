@@ -15109,6 +15109,15 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
     }
   });
 
+  if (eventRecord.vertical === 'PreInspection') {
+    // Edit the organizer's copy first: Google propagates organizer edits to guest
+    // copies, while guest-copy description edits may not persist.
+    const organizerId = tmv3_clean_(eventRecord.organizerCalendarId).toLowerCase();
+    copies.sort(function(a, b) {
+      return (String(b.calendarId).toLowerCase() === organizerId) - (String(a.calendarId).toLowerCase() === organizerId);
+    });
+  }
+
   const missing = tmv3_titleMissingRequiredCalendarIds_(ids, copies);
   if (missing.length) {
     throw new Error(
@@ -15141,7 +15150,9 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
       authoritativeCopy.beforeDescription,
       { preserveOldTitle:!recordedLegacy }
     );
-    const savedLegacy = recordedLegacy || (authoritativeCopy.beforeTitle !== desired ? authoritativeCopy.beforeTitle : '');
+    const staleCopy = copies.filter(function(copy) { return tmv3_clean_(copy.beforeTitle) !== desired; })[0];
+    const savedLegacy = recordedLegacy || (authoritativeCopy.beforeTitle !== desired ? authoritativeCopy.beforeTitle : '') ||
+      (staleCopy ? staleCopy.beforeTitle : '');
     authoritativePreInspectionPlan.after = tmv3_preInspectionEnsureLegacyTitle_(
       authoritativePreInspectionPlan.after, savedLegacy
     );
@@ -15189,8 +15200,23 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
 
   const results = [];
 
-  copies.forEach(function(copy) {
+  copies.forEach(function(copy, index) {
     const plan = copy.plan;
+
+    if (eventRecord.vertical === 'PreInspection' && index > 0 && (plan.descriptionChange || plan.titleChange)) {
+      // Google copies the organizer's edit to guest copies after a few seconds.
+      for (let attempt = 0; attempt < 5 && !copy.propagatedFromOrganizer; attempt++) {
+        if (attempt) Utilities.sleep(2000);
+        const propagated = tmv3_findEventCopyRobust_(copy.calendarId, contract.eventId);
+        if (propagated && propagated.event &&
+            String(propagated.event.getDescription() || '') === plan.after &&
+            tmv3_clean_(propagated.event.getTitle()) === desired) {
+          plan.descriptionChange = false;
+          plan.titleChange = false;
+          copy.propagatedFromOrganizer = true;
+        }
+      }
+    }
 
     if (plan.descriptionChange) {
       copy.event.setDescription(plan.after);
@@ -15245,6 +15271,7 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
     results.push({
       calendarId:copy.calendarId,
       status:
+        copy.propagatedFromOrganizer ? 'PROPAGATED_FROM_ORGANIZER_VERIFIED' :
         !plan.titleChange && !plan.descriptionChange
           ? 'ALREADY_CORRECT'
           : 'WRITTEN_AND_VERIFIED',
