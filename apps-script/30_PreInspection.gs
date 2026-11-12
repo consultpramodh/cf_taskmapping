@@ -40,6 +40,9 @@ var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
 // Operator rule 2026-11-12: the first-email grace period never runs past the appointment.
 var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;
+// Operator rule 2026-11-12: every eligible event is corrected in the same slot. The old limit of one
+// Task write per batch is off; a per-slot time limit keeps the run inside Apps Script's 6 minutes.
+var TMV3_PI_ONE_WRITE_PER_BATCH = false;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -2114,8 +2117,9 @@ function tmv3_piReconcileAuthoritativeEvent_(cycle, record, one, doneKey) {
   one.plan = plan.plan; one.blocker = plan.blocker || ''; one.taskId = plan.taskId || '';
 
   // F4 one business transaction per batch; a deferred event keeps its sweep position.
-  if (!plan.blocker && plan.actions.length && result.writes >= 1) return 'DEFER';
-  if (!plan.blocker && plan.actions.length && result.writes < 1) {
+  const oneWriteCap = TMV3_PI_ONE_WRITE_PER_BATCH === true;
+  if (oneWriteCap && !plan.blocker && plan.actions.length && result.writes >= 1) return 'DEFER';
+  if (!plan.blocker && plan.actions.length && (!oneWriteCap || result.writes < 1)) {
     if (tmv3_piPlanTouchesTask_(plan)) result.writes++;
     one.execution = tmv3_executeFreshStep7Selection_({previousPlan:plan.plan,contract:plan}, 'PREINSPECTIONAUTO', 'ALL');
     if (!/VERIFIED|CONVERGED|NO_CHANGE/.test(String(one.execution.status || ''))) {
@@ -2286,11 +2290,13 @@ function tmv3_piCycleBody_(cycle) {
     catch (err) { result.status = 'ATTENTION'; tmv3_preInspectionFailureAlert_(r.eventId, String(err)); }
   });
 
-  // Stage F: tested safety budgets — at most three events and one business write.
+  // Stage F: at most three events per batch; all eligible writes run (see TMV3_PI_ONE_WRITE_PER_BATCH).
   let cursor = cycle.sweep ? 0 : Number(props.getProperty('TMV3_PI_CURSOR') || 0);
   const cap = Math.max(1, Math.min(3, Number(TMV3.OPERATIONS.preInspectionAutomationMaxEventsPerRun || 3)));
   if (selected.length) cursor = cursor % selected.length;
   for (let i = 0; i < Math.min(cap, selected.length); i++) {
+    // Slot time limit: stop before starting another event; it stays next in the sweep.
+    if (i > 0 && options.deadline && Date.now() > Number(options.deadline)) { result.deadlineReached = true; break; }
     const record = selected[(cursor + i) % selected.length];
     const one = {eventId:record.eventId};
     result.processed++;
@@ -2670,14 +2676,15 @@ function tmv3_runPreInspectionDailySlot_(slot) {
     calendarReview = {status:'PI_REVIEW_ATTENTION',error:String(err && err.message || err).slice(0, 400)};
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
-  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,reason:'DAILY_SLOT_' + slot});
+  const deadline = sheetRefreshStarted + 210000;
+  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
   // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
   // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of
   // giving the whole slot up; the batch time limit below still ends the slot well inside 6 minutes.
   const lockRetries = [];
   while (result.status === 'LOCK_BUSY' && Date.now() - sheetRefreshStarted < 150000) {
     lockRetries.push(new Date().toISOString());
-    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
+    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
   }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),
     notifications:Number(result.notifications || 0),results:(result.results || []).slice()};
@@ -2685,8 +2692,8 @@ function tmv3_runPreInspectionDailySlot_(slot) {
   const batchStatuses = [result.status];
   while (result.sweep && result.sweep.remaining > 0 && result.processed > 0 &&
       result.status !== 'API_BUDGET_WAIT' && result.status !== 'LOCK_BUSY' &&
-      Date.now() - sheetRefreshStarted < 240000) {
-    const next = tmv3_preInspectionAutomationCycle_({force:true,sweepContinue:true,reason:'DAILY_SLOT_' + slot});
+      Date.now() < deadline) {
+    const next = tmv3_preInspectionAutomationCycle_({force:true,sweepContinue:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
     batchStatuses.push(next.status);
     totals.processed += Number(next.processed || 0); totals.writes += Number(next.writes || 0);
     totals.notifications += Number(next.notifications || 0); totals.results.push.apply(totals.results, next.results || []);

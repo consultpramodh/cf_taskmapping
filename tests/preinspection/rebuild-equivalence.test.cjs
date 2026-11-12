@@ -24,7 +24,7 @@ function check(name, fn) {
   checks++;
   try { fn(); } catch (e) { failures.push(name + ': ' + String(e && e.message || e).slice(0, 600)); }
 }
-const BASELINE_RULES = t => t.replace(/^var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;/m, 'var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = false;').replace(/^var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;/m, 'var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = false;')
+const BASELINE_RULES = t => t.replace(/^var TMV3_PI_ONE_WRITE_PER_BATCH = false;/m, 'var TMV3_PI_ONE_WRITE_PER_BATCH = true;').replace(/^var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;/m, 'var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = false;').replace(/^var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;/m, 'var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = false;')
   .replace(/^var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;/m, 'var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = false;')
   .replace(/^var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = true;/m, 'var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = false;');
 const CLOSE = (f, t) => f === '30_PreInspection.gs' ? BASELINE_RULES(t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;')) : t;
@@ -673,4 +673,17 @@ if (failures.length) {
   console.error('FAIL ' + failures.length + '/' + checks + '\n' + failures.join('\n'));
   process.exit(1);
 }
+check('NEW_ALL_ELIGIBLE_WRITES_IN_ONE_BATCH', () => {
+  // Operator rule 2026-11-12: no one-write-per-batch limit; every eligible event in the batch is corrected.
+  const sc = {records: [rec(0), rec(1), rec(2)], plans: {'evt0@google.com': [[PATCH], [CONVERGED]],
+    'evt1@google.com': [[PATCH], [CONVERGED]], 'evt2@google.com': [[CONVERGED]]}};
+  const live = cycleEnvOn(load(REBUILT, {transform: (f, t) => f === '30_PreInspection.gs' ? t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = (?:false|true);/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = true;') : t}), sc);
+  const r = live.ctx.tmv3_preInspectionAutomationCycle_({force: true});
+  assert.equal(r.writes, 2, JSON.stringify(r)); assert.equal(r.processed, 3); assert.ok(!r.deferredWriteBudget);
+  assert.equal(live.log.filter(e => e.kind === 'EXECUTE').length, 2);
+  // The old limit still exists behind its switch (used by the equivalence baseline).
+  const capped = cycleEnv(REBUILT, sc).ctx.tmv3_preInspectionAutomationCycle_({force: true});
+  assert.equal(capped.writes, 1); assert.equal(capped.deferredWriteBudget, true);
+});
+
 console.log('PASS: ' + checks + ' equivalence and safety checks (shared files: ' + path.relative(ROOT, SHARED) + ')');
