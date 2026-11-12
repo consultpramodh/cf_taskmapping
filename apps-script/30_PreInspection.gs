@@ -1867,6 +1867,50 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   return {status:'SENT',sent:1,to:email.recipient,followupNumber:decision.followupNumber,missing:assessment.missing};
 }
 
+/** What an automation stop means and what to do, in plain English. */
+function tmv3_piAlertExplain_(error) {
+  const e = String(error || '');
+  const rules = [
+    [/no longer OPEN/i, 'The Striven Task for this appointment is no longer Open (it was cancelled, put on hold or changed by someone). Automation never edits a closed Task.',
+      'If the visit is cancelled, nothing to do. If it should still happen, reopen the Task in Striven.'],
+    [/REQUESTED_BY/i, 'Striven would get a Requested By that is not the employee who booked the appointment or its owner.',
+      'Check the appointment creator is a Classic Fireplace employee in Striven with that exact email.'],
+    [/KAREN_EMPLOYEE_ID_UNVERIFIED|OWNER_EMPLOYEE_MAPPING_UNVERIFIED|OWNER_MISSING/i, 'The appointment is on a calendar whose owner is not yet mapped to a Striven employee.',
+      'Ask for that inspector to be added to the approved owner list.'],
+    [/SAME_DAY_COMPLETED|SAME_VISIT_FULFILLED/i, 'A Pre-Inspection Task for this customer was already completed on the same day, so no new Task was created.',
+      'Nothing, unless this is a genuinely separate second visit; then create the Task in Striven.'],
+    [/UNDATED/i, 'The customer has a completed Pre-Inspection Task with no date, so automation cannot tell if it was this visit.',
+      'Add the date to that Task in Striven, or create the new Task manually.'],
+    [/APPROVED_ORDER|IN_PROGRESS_ORDER/i, 'The Sales Order on this appointment is Approved or In Progress, which means an installation, not a pre-inspection.',
+      'Check the appointment type; move it to the Installation calendar if needed.'],
+    [/PI_SO_|ORDER_/i, 'The Sales Order number on the appointment could not be matched uniquely to this customer in Striven.',
+      'Check the SO number in the Calendar event.'],
+    [/HISTORY_API_LIMIT|HYDRATION_CAP|PAGINATION/i, 'The customer has too many Pre-Inspection Tasks to check safely.',
+      'Create or link the Task manually in Striven.'],
+    [/MULTIPLE_OPEN|NOT_PROVEN|MULTIPLE_CANONICAL/i, 'More than one possible Task matched this appointment, so automation did not guess.',
+      'Link the right Task in the Calendar event, or close the duplicate.'],
+    [/DAILY_GUARD|daily api usage/i, 'The daily Striven API limit was reached.', 'Nothing; it continues after the daily reset.'],
+    [/NOT_VERIFIED|READBACK|UNCERTAIN/i, 'A change was sent to Striven or Calendar but could not be confirmed afterwards.',
+      'Open the Task and Calendar event and check them before anything is retried.']
+  ];
+  for (let i = 0; i < rules.length; i++) if (rules[i][0].test(e)) return {what:rules[i][1],todo:rules[i][2]};
+  return {what:'Automation stopped for this appointment and changed nothing.', todo:'Open the appointment and its Striven Task and check them.'};
+}
+
+/** Appointment details for an alert; never throws. */
+function tmv3_piAlertEvent_(eventId) {
+  if (!eventId) return null;
+  try {
+    const r = tmv3_findFreshEventRecord_('PreInspection', eventId);
+    if (!r) return null;
+    const when = r.start ? Utilities.formatDate(new Date(r.start), TMV3_TIMEZONE, 'EEE MMM d, yyyy h:mm a') : '';
+    const taskId = String(r.existingTaskId || '');
+    return {title:String(r.title || ''),when:when,location:String(r.location || ''),
+      calendarUrl:tmv3_calendarEventUrl_(r.eventId, r.calendarId || r.organizerCalendarId) || '',
+      taskUrl:tmv3_piPositiveId_(taskId) ? TMV3.TASK_URL_BASE + taskId : '',taskId:taskId};
+  } catch (e) { return null; }
+}
+
 /** Operator failure alert (separate template; never the creator email). One per day per event+error. */
 function tmv3_preInspectionFailureAlert_(eventId, error) {
   if (!TMV3_PI_CLEANED_RELEASE_APPROVED) return {status:'PI_FAILURE_EMAIL_DISABLED_PENDING_RELEASE',sent:0};
@@ -1879,13 +1923,23 @@ function tmv3_preInspectionFailureAlert_(eventId, error) {
     if (MailApp.getRemainingDailyQuota() < 1) return {status:'QUOTA_DEFERRED'};
     props.setProperty(key, 'SENDING');
     const esc = tmv3_preInspectionHtmlEscape_;
+    const ev = tmv3_piAlertEvent_(eventId);
+    const why = tmv3_piAlertExplain_(error);
+    const appointment = ev ? (ev.title || '(untitled)') + (ev.when ? ' — ' + ev.when : '') : (eventId ? 'Event ' + eventId : 'Scheduled run (not one appointment)');
+    const links = ev ? [ev.calendarUrl ? '<a href="' + esc(ev.calendarUrl) + '">Open Calendar event</a>' : '',
+      ev.taskUrl ? '<a href="' + esc(ev.taskUrl) + '">Open Striven Task #' + esc(ev.taskId) + '</a>' : ''].filter(Boolean).join(' · ') : '';
     MailApp.sendEmail({to:TMV3.OPERATIONS.preInspectionFailureAlertEmail,
       subject:'Pre-Inspection Automation: action required',
-      body:'Pre-Inspection automation needs review. Event: ' + (eventId || 'Source refresh') + '\n' + error,
+      body:'Appointment: ' + appointment + (ev && ev.location ? '\nLocation: ' + ev.location : '') +
+        '\n\nWhat happened: ' + why.what + '\nWhat to do: ' + why.todo +
+        '\n\nNothing was changed for this appointment.' + (ev && ev.calendarUrl ? '\nCalendar: ' + ev.calendarUrl : '') +
+        (ev && ev.taskUrl ? '\nTask: ' + ev.taskUrl : '') + '\n\nTechnical detail: ' + error + (eventId ? ' (event ' + eventId + ')' : ''),
       htmlBody:'<p><em>This is an automated email notification from Classic Fireplace &amp; BBQ Store.</em></p>' +
-        '<p>Hi Pramodh,</p><p style="color:#B42318;font-weight:700;">Pre-Inspection automation requires review.</p>' +
-        '<p>Event: ' + esc(eventId || 'Source refresh') + '</p><p>' + esc(error) + '</p>' +
-        '<p>The affected action remains queued. Verify any uncertain write before retrying.</p>',
+        '<p>Hi Pramodh,</p><p style="color:#B42318;font-weight:700;">Pre-Inspection automation needs a quick review.</p>' +
+        '<p><strong>Appointment:</strong> ' + esc(appointment) + (ev && ev.location ? '<br><strong>Location:</strong> ' + esc(ev.location) : '') + '</p>' +
+        '<p><strong>What happened:</strong> ' + esc(why.what) + '<br><strong>What to do:</strong> ' + esc(why.todo) + '</p>' +
+        '<p>Nothing was changed for this appointment.' + (links ? '<br>' + links : '') + '</p>' +
+        '<p style="color:#888;font-size:11px;">Technical detail: ' + esc(error) + (eventId ? ' (event ' + esc(eventId) + ')' : '') + '</p>',
       name:'Classic Fireplace & BBQ Store'});
     props.setProperty(key, 'SENT');
     return {status:'SENT'};
@@ -2065,7 +2119,16 @@ function tmv3_piProcessCycleEvent_(cycle, record, one) {
     result.notifications += Number(one.notification && one.notification.sent || 0);
     return 'PUSH';
   } catch (err) {
-    one.status = 'ATTENTION'; one.error = String(err && err.message || err); result.status = 'ATTENTION';
+    const message = String(err && err.message || err);
+    const closed = tmv3_piClosedTaskStatus_(message, one.taskId);
+    if (closed && tmv3_taskIsCompleted_(closed)) {
+      // The inspector finished the visit: expected outcome, not a failure. No alert.
+      one.status = 'TASK_COMPLETED_NO_ACTION'; one.taskStatus = closed;
+      tmv3_piPendingRemove_(cycle, record.eventId);
+      tmv3_audit_('PreInspection', record.eventId, one.taskId, 'PREINSPECTIONAUTO', 'TASK_COMPLETED_NO_ACTION', closed);
+      return 'PUSH';
+    }
+    one.status = 'ATTENTION'; one.error = message; result.status = 'ATTENTION';
     tmv3_piPendingAdd_(cycle, record.eventId);
     tmv3_audit_('PreInspection', record.eventId, '', 'PREINSPECTIONAUTO', 'ATTENTION', one.error);
     tmv3_preInspectionFailureAlert_(record.eventId, one.error);
@@ -2076,6 +2139,15 @@ function tmv3_piProcessCycleEvent_(cycle, record, one) {
     }
     return 'PUSH';
   }
+}
+
+/** Striven status of a Task the shared executor refused because it is no longer OPEN, else ''. */
+function tmv3_piClosedTaskStatus_(message, taskId) {
+  if (!/Fresh Task state is no longer OPEN/i.test(String(message || '')) || !tmv3_piPositiveId_(taskId || '')) return '';
+  try {
+    const task = tmv3_getTaskById_(Number(taskId));
+    return task && String(task['Task ID']) === String(taskId) ? String(task.Status || '') : '';
+  } catch (e) { return ''; }
 }
 
 /** Stage G: durable sweep position or rotating cursor, pending queue, last result. */

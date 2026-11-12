@@ -597,6 +597,25 @@ check('NEW_CREATOR_EMAILS_OFF_AND_LINK_ONLY_PLAN_CONVERGED', () => {
   assert.equal(b.ctx.tmv3_preInspectionCompletionVerified_([Object.assign({}, linkOnly, {actions: ['VERIFY_CALENDAR_LINKS', 'PATCH_TASK_RELATIONSHIPS']})], {}), false);
 });
 
+check('NEW_COMPLETED_TASK_NO_ALERT_AND_PLAIN_ALERT', () => {
+  const sc = {records: [rec(0)], plans: {'evt0@google.com': [[PATCH]]}};
+  const env = cycleEnv(REBUILT, sc);
+  env.ctx.tmv3_executeFreshStep7Selection_ = () => { throw new Error('Fresh Task state is no longer OPEN.'); };
+  env.ctx.tmv3_getTaskById_ = id => ({'Task ID': String(id), 'Task Type ID': 105, 'Customer ID': '100', Status: 'Completed'});
+  const r = env.ctx.tmv3_preInspectionAutomationCycle_({force: true});
+  assert.equal(r.results[0].status, 'TASK_COMPLETED_NO_ACTION'); assert.equal(r.status, 'COMPLETE');
+  const alerts = l => l.filter(e => e.kind === 'MAIL' && /Automation: action required/.test(e.subject)).length;
+  assert.equal(alerts(env.log), 0);
+  const env2 = cycleEnv(REBUILT, sc);
+  env2.ctx.tmv3_executeFreshStep7Selection_ = () => { throw new Error('Fresh Task state is no longer OPEN.'); };
+  env2.ctx.tmv3_getTaskById_ = id => ({'Task ID': String(id), 'Task Type ID': 105, 'Customer ID': '100', Status: 'Cancelled'});
+  const r2 = env2.ctx.tmv3_preInspectionAutomationCycle_({force: true});
+  assert.equal(r2.results[0].status, 'ATTENTION'); assert.equal(alerts(env2.log), 1);
+  assert.match(env2.ctx.tmv3_piAlertExplain_('Fresh Task state is no longer OPEN.').what, /no longer Open/);
+  assert.match(env2.ctx.tmv3_piAlertExplain_('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE').what, /Requested By/);
+  assert.match(env2.ctx.tmv3_piAlertExplain_('weird').what, /changed nothing/);
+});
+
 // ---------------------------------------------------------------- report
 if (failures.length) {
   console.error('FAIL ' + failures.length + '/' + checks + '\n' + failures.join('\n'));
