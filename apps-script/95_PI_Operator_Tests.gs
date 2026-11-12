@@ -52,7 +52,8 @@ function piTest_SimulateSlot() {
       return {status:'SIMULATED_NO_CHANGE'};
     };
     tmv3_piSendMissingDetailsAfterRelease_ = function(record) {
-      would.emails.push(piTest_noticeRow_(record));
+      const row = piTest_noticeRow_(record);
+      if (row.missing.length && !would.emails.some(function(e) { return e.title === row.title && e.start === row.start; })) would.emails.push(row);
       return {status:'SIMULATED_NOT_SENT',sent:0};
     };
     tmv3_preInspectionFailureAlert_ = function(eventId, err) { would.alerts.push({eventId:eventId,error:String(err).slice(0, 200)}); return {status:'SIMULATED'}; };
@@ -76,7 +77,8 @@ function piTest_SimulateSlot() {
   const perEvent = (result && result.results || []).map(function(one) {
     const exec = would.executions.filter(function(x) { return x.eventId === one.eventId; })[0];
     return {event:titles[one.eventId] || one.eventId,eventId:one.eventId,
-      outcome:exec ? 'WOULD_WRITE' : one.error ? 'BLOCKED' : (one.status || one.plan || one.intake || ''),
+      outcome:exec ? ((exec.actions || []).some(function(a) { return a !== 'VERIFY_CALENDAR_LINKS'; }) ? 'WOULD_WRITE' : 'LINK_CHECK_ONLY') :
+        one.error ? 'BLOCKED' : one.blocker ? 'NEEDS_REVIEW' : (one.status || one.plan || one.intake || ''),
       plan:one.plan || '',actions:exec ? exec.actions : [],taskId:one.taskId || '',blocker:one.blocker || '',
       guard:one.error || '',recreate:one.recreateAuthorized || '',orderCheck:one.orderStatusBeforeCreate && one.orderStatusBeforeCreate.status || ''};
   });
