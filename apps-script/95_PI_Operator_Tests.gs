@@ -4,7 +4,7 @@
 //   piTest_SimulateSlot()             READ-ONLY: emulates the 08:00/13:00/17:00 trigger for all events
 //   piTest_PreviewNotices()           READ-ONLY: who would get a missing-details email now
 //   piTest_SendTestEmails()           sends next-slot missing-details emails to Pramodh only, TEST subject
-//   piTest_SendQuestionTest()         sends YES/NO pre-inspection questions to Pramodh only, TEST subject
+//   piTest_SendQuestionTest()         missing-details email with YES/NO buttons, to Pramodh only, TEST subject
 //   piTest_ConfirmationAnswers()      READ-ONLY: recorded YES/NO answers
 //   piTest_LastState()                READ-ONLY: last run result and pending queue
 //   piTest_PropertyInventory()        READ-ONLY: Script Properties as KEEP / JUNK / OTHER
@@ -174,7 +174,7 @@ function piTest_SendTestEmails() {
   return out;
 }
 
-/** TEST: send the YES/NO question for every unclear Stephen-calendar booking to Pramodh only.
+/** TEST: the missing-details email WITH the YES/NO section, for every unclear Stephen-calendar booking, to Pramodh only.
  * Clicking a TEST button records a test answer and never changes the appointment's classification. */
 function piTest_SendQuestionTest() {
   if (piTest_settings_().emailTo !== 'pramodh@classicfireplace.ca') throw new Error('PI_TEST_RECIPIENT_CHANGED');
@@ -185,11 +185,14 @@ function piTest_SendQuestionTest() {
     off = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12});
   } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }
   const sent = (off.reviewRecords || []).map(function(record) {
-    const q = tmv3_piVisitQuestionEmail_(record, true);
-    const message = {to:'pramodh@classicfireplace.ca',subject:'TEST ' + q.subject,body:q.body,htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'};
+    const r = Object.assign({}, record, {piOffSharedCandidate:true, notificationFollowupNumber:0});
+    const q = tmv3_piAddVisitQuestion_(tmv3_preInspectionMissingDetailEmailPreview_(r), r, true);
+    if (!q.questionAdded) throw new Error('PI_TEST_QUESTION_SECTION_NOT_ADDED');
+    const message = {to:'pramodh@classicfireplace.ca',subject:'TEST ' + q.subject,
+      body:'Please update the missing Pre-Inspection details.' + (q.bodySuffix || ''),htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'};
     if (message.to !== 'pramodh@classicfireplace.ca' || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
     MailApp.sendEmail(message);
-    return {subject:message.subject,wouldGoTo:q.recipient};
+    return {subject:message.subject,wouldGoTo:q.recipient,wouldCc:q.cc};
   });
   const out = {status:'TEST_QUESTIONS_SENT',to:'pramodh@classicfireplace.ca',count:sent.length,emails:sent};
   Logger.log('PI_TEST_QUESTIONS=' + JSON.stringify(out));

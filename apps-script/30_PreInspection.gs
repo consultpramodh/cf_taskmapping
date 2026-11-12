@@ -1884,14 +1884,17 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   // SENDING is written first: a crash mid-send leaves an uncertain state that is never retried.
   const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
   props.setProperty(key, JSON.stringify(next));
+  const sendable = record.piVisitQuestion === true ? tmv3_piAddVisitQuestion_(email, record, false) : email;
   MailApp.sendEmail({to:email.recipient,cc:email.cc.join(','),subject:email.subject,
     body:(decision.followupNumber ? 'FOLLOW-UP #' + decision.followupNumber + ': ' : '') +
-      'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; '),
-    htmlBody:email.htmlBody,name:'Classic Fireplace & BBQ Store'});
+      'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; ') +
+      (sendable.bodySuffix || ''),
+    htmlBody:sendable.htmlBody,name:'Classic Fireplace & BBQ Store'});
   next.status = 'SENT';
   props.setProperty(key, JSON.stringify(next));
   tmv3_audit_('PreInspection', record.eventId, '', 'MISSING_DETAILS_EMAIL', 'SENT',
-    JSON.stringify({to:email.recipient,followupNumber:decision.followupNumber,missing:assessment.missing}));
+    JSON.stringify({to:email.recipient,followupNumber:decision.followupNumber,missing:assessment.missing,
+      visitQuestion:sendable.questionAdded === true}));
   return {status:'SENT',sent:1,to:email.recipient,followupNumber:decision.followupNumber,missing:assessment.missing};
 }
 
@@ -2433,9 +2436,13 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       if (intent.status === 'REVIEW_VISIT_TYPE') {
         out.reviewNoEmail = (out.reviewNoEmail || []).concat([{eventId:record.eventId,title:record.title,reason:intent.reason}]);
         out.reviewRecords = (out.reviewRecords || []).concat([record]);
-        if (TMV3_PI_VISIT_QUESTIONS_ENABLED === true) {
-          try { out.questions = (out.questions || []).concat([tmv3_piSendVisitQuestion_(record)]); }
-          catch (e) { out.questions = (out.questions || []).concat([{eventId:record.eventId,status:'ERROR',error:String(e).slice(0, 160)}]); }
+        if (TMV3_PI_VISIT_QUESTIONS_ENABLED === true && !tmv3_preInspectionApprovalHold_(record.eventId)) {
+          // Same approved missing-details email, with the YES/NO section added.
+          let q;
+          try { q = tmv3_piSendMissingDetailsAfterRelease_(Object.assign({}, record, {piOffSharedCandidate:true,piVisitQuestion:true})); }
+          catch (e) { q = {status:'ERROR',error:String(e && e.message || e).slice(0, 160),sent:0}; }
+          out.questions = (out.questions || []).concat([Object.assign({eventId:record.eventId}, q)]);
+          out.notified += Number(q.sent || 0);
         }
         return;
       }
@@ -2529,55 +2536,28 @@ function tmv3_piRecordConfirmationInReview_(eventId, value) {
   }
 }
 
-/** Question email: same look as the approved notification. */
-function tmv3_piVisitQuestionEmail_(record, test) {
+/** Adds the "Is this a pre-inspection?" YES/NO section to the approved missing-details email,
+ * just above "Open calendar appointment". The approved template itself is not changed; if its
+ * closing section ever moves, the email is sent without buttons rather than altered. */
+function tmv3_piAddVisitQuestion_(email, record, test) {
+  const marker = '<tr><td style="padding:0 24px 22px;">';
+  if (!email || String(email.htmlBody || '').indexOf(marker) < 0) return Object.assign({}, email, {questionAdded:false});
   const esc = tmv3_preInspectionHtmlEscape_;
-  const when = Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'MMM d, yyyy') + ' · ' +
-    Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'h:mm a') + ' – ' + Utilities.formatDate(new Date(record.end), TMV3_TIMEZONE, 'h:mm a');
-  const creator = tmv3_preInspectionCreatorEmail_(record);
   const yes = tmv3_piConfirmLink_(record.eventId, 'YES', test), no = tmv3_piConfirmLink_(record.eventId, 'NO', test);
   const button = function(href, label, bg) {
     return '<a href="' + esc(href) + '" style="display:inline-block;padding:12px 28px;margin-right:12px;background:' + bg +
       ';color:#ffffff;font-weight:700;text-decoration:none;border-radius:4px;">' + label + '</a>';
   };
-  const html = '<!doctype html><html lang="en"><body style="margin:0;padding:0;background:#f4f3f1;font-family:Arial,Helvetica,sans-serif;color:#222;">' +
-    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
-    '<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;">' +
-    '<tr><td style="background:#202020;border-top:4px solid #b42b2f;padding:18px 24px;"><div style="font-size:18px;font-weight:700;color:#ffffff;">Is this a Pre-Inspection?</div>' +
-    '<div style="font-size:12px;color:#aaaaaa;margin-top:3px;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
-    '<tr><td style="padding:20px 24px 12px;"><div style="font-size:12px;color:#666;font-style:italic;margin-bottom:16px;">This is an automated email notification from Classic Fireplace &amp; BBQ Store.</div>' +
-    '<div style="font-size:14px;line-height:21px;">Hi <strong>' + esc(tmv3_preInspectionCreatorFirstName_(creator)) + '</strong>,</div>' +
-    '<div style="font-size:14px;line-height:21px;margin-top:8px;">You booked this appointment on Stephen\'s calendar. We could not tell from the details whether it is a pre-inspection.</div>' +
-    '<div style="margin-top:12px;padding:12px;background:#f6f5f3;border:1px solid #e2e0dc;"><strong>' + esc(record.title || '(Untitled event)') + '</strong><br>' +
-    esc(when) + '<br>' + esc(record.location || 'Location missing') + '</div>' +
-    '<div style="font-size:14px;margin:18px 0 6px;">Is this appointment a pre-inspection?</div>' +
-    '<div style="margin:10px 0 18px;">' + button(yes, 'YES', '#256b35') + button(no, 'NO', '#6b6b6b') + '</div>' +
-    '<div style="font-size:12px;color:#666;">If YES, please also add the CF Preinspects calendar as a guest.</div></td></tr>' +
-    '<tr><td style="background:#202020;padding:12px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
-    '</table></td></tr></table></body></html>';
-  return {recipient:creator,subject:'IS THIS A PRE-INSPECTION?: ' + (record.title || 'Appointment') + ' | ' + when,htmlBody:html,
-    body:'Is this a pre-inspection? YES: ' + yes + '  NO: ' + no};
-}
-
-/** Live question send: creator only, one per business day until answered, before the visit. */
-function tmv3_piSendVisitQuestion_(record) {
-  const q = tmv3_piVisitQuestionEmail_(record, false);
-  if (!q.recipient) return {eventId:record.eventId,status:'CREATOR_UNVERIFIED_NO_SEND'};
-  if (tmv3_piCreatorEmailExcluded_(q.recipient)) return {eventId:record.eventId,status:'EXCLUDED_CREATOR_NO_SEND'};
-  if (TMV3_PI_CREATOR_EMAILS_ENABLED !== true || TMV3.MODE !== 'PRODUCTION_WRITE') return {eventId:record.eventId,status:'DELIVERY_GATED'};
-  const props = PropertiesService.getScriptProperties();
-  const key = 'TMV3_PI_QUESTION_' + tmv3_hash_(record.eventId);
-  let state = null;
-  try { state = JSON.parse(props.getProperty(key) || 'null'); } catch (e) { return {eventId:record.eventId,status:'UNCERTAIN_SEND_NO_RETRY'}; }
-  const d = tmv3_preInspectionNotificationDecision_(record, state);
-  if (!d.send) return {eventId:record.eventId,status:d.status};
-  const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
-  props.setProperty(key, JSON.stringify(next));
-  MailApp.sendEmail({to:q.recipient,subject:(d.followupNumber ? 'FOLLOW-UP #' + d.followupNumber + ' | ' : '') + q.subject,
-    body:q.body,htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'});
-  next.status = 'SENT'; props.setProperty(key, JSON.stringify(next));
-  tmv3_audit_('PreInspection', record.eventId, '', 'PI_VISIT_QUESTION', 'SENT', JSON.stringify({to:q.recipient}));
-  return {eventId:record.eventId,status:'SENT',to:q.recipient};
+  const section = '<tr><td style="padding:0 24px 18px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" ' +
+    'style="background:#f6f5f3;border:1px solid #e2e0dc;"><tr><td style="padding:14px;">' +
+    '<div style="font-size:15px;font-weight:700;">Is this appointment a pre-inspection?</div>' +
+    '<div style="font-size:13px;color:#555;margin-top:4px;">We could not tell from the details. Please answer so we know whether to follow up.</div>' +
+    '<div style="margin:12px 0 4px;">' + button(yes, 'YES', '#256b35') + button(no, 'NO', '#6b6b6b') + '</div>' +
+    '<div style="font-size:12px;color:#666;">If NO, you can ignore the rest of this email; we will not ask again.</div>' +
+    '</td></tr></table></td></tr>';
+  const html = String(email.htmlBody).replace(marker, section + marker);
+  return Object.assign({}, email, {htmlBody:html, questionAdded:true,
+    bodySuffix:' | Is this a pre-inspection? YES: ' + yes + '  NO: ' + no});
 }
 
 // =====================================================================

@@ -14,10 +14,17 @@ const params = href => Object.fromEntries(new URL(href.replace(/&amp;/g, '&')).s
 const links = html => (html.match(/href="([^"]+)"/g) || []).map(x => x.slice(6, -1));
 
 // TEST email: buttons carry t=1; answering does not change the live decision.
-const q = c.tmv3_piVisitQuestionEmail_(record, true);
+const base = c.tmv3_preInspectionMissingDetailEmailPreview_(Object.assign({}, record, {piOffSharedCandidate: true, notificationFollowupNumber: 0}));
+const q = c.tmv3_piAddVisitQuestion_(base, record, true);
+assert.equal(q.questionAdded, true);
 assert.equal(q.recipient, 'edward@classicfireplace.ca');
-assert.match(q.subject, /^IS THIS A PRE-INSPECTION\?: #59298-Nick Giardina/);
-const [yesT, noT] = links(q.htmlBody);
+assert.equal(q.subject, base.subject, 'approved subject unchanged');
+assert.match(q.subject, /MISSING DETAILS/);
+// Approved template is intact: removing the added section gives back the original email exactly.
+const added = q.htmlBody.match(/<tr><td style="padding:0 24px 18px;">[\s\S]*?will not ask again\.<\/div><\/td><\/tr><\/table><\/td><\/tr>/)[0];
+assert.equal(q.htmlBody.replace(added, ''), base.htmlBody);
+assert.ok(q.htmlBody.indexOf('Is this appointment a pre-inspection?') < q.htmlBody.indexOf('Open calendar appointment'));
+const [yesT, noT] = links(added);
 assert.equal(params(yesT).a, 'YES'); assert.equal(params(yesT).t, '1'); assert.equal(params(noT).a, 'NO');
 globalThis.__HARNESS_USER__ = 'pramodh@classicfireplace.ca';
 let page = c.doGet({parameter: params(yesT)});
@@ -32,8 +39,8 @@ assert.match(page.html, /not valid/);
 assert.equal(audits.length, 0);
 
 // LIVE link records who answered and flips classification.
-const live = c.tmv3_piVisitQuestionEmail_(record, false);
-const [yesL] = links(live.htmlBody);
+const live = c.tmv3_piAddVisitQuestion_(base, record, false);
+const [yesL] = links(live.htmlBody.match(/Is this appointment a pre-inspection\?[\s\S]*?will not ask again/)[0]);
 assert.equal(params(yesL).t, undefined);
 globalThis.__HARNESS_USER__ = 'edward@classicfireplace.ca';
 page = c.doGet({parameter: params(yesL)});
