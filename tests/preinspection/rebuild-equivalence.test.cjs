@@ -639,9 +639,18 @@ check('NEW_OFF_SHARED_REP_CALENDAR_NOTICES', () => {
   const out = c.tmv3_piNotifyOffSharedCandidates_({maxLiveChecks: 0});
   assert.equal(out.candidates, 1); assert.equal(out.notified, 1);
   assert.equal(sent[0].eventId, 'rep1@google.com');
+  // Rep-booked customer visit without the word pre-inspection is a candidate; service/meeting/inspector-own are not.
+  const cfgPI = {secondaryIgnoredCreatorEmails: ['stephen@classicfireplace.ca', 'jay@classicfireplace.ca', 'trevor@classicfireplace.ca', 'pramodh@classicfireplace.ca', 'thang@classicfireplace.ca']};
+  const visit = r => c.tmv3_piRepBookedIntent_(Object.assign(rec(0), {calendarRole: 'SECONDARY_OWNER', customerNumber: '', orderNumber: ''}, r), cfgPI);
+  assert.equal(visit({title: 'John Barber (416) 881-3225', creator: 'adam@classicfireplace.ca', location: '5 Wheatley Crescent', rawDescription: 'Remove gas unit', descriptionClean: 'Remove gas unit'}).status, 'EXPLICIT_PREINSPECTION');
+  assert.equal(visit({title: 'Jessica Kirsch', creator: 'steve@classicfireplace.ca', location: '64 Alcorn Ave', phone: '', rawDescription: 'Wood Insert.', descriptionClean: 'Wood Insert.'}).status, 'EXPLICIT_PREINSPECTION');
+  assert.equal(visit({title: 'Al Konstantinou 2 fireplace service', creator: 'warren@classicfireplace.ca', location: '179 Lawson Rd'}).status, 'IGNORE');
+  assert.equal(visit({title: 'Chatsworth - Layout meeting', creator: 'adam@classicfireplace.ca', location: ''}).status, 'IGNORE');
+  assert.equal(visit({title: 'Ann Marie paananen 416)266-9473', creator: 'stephen@classicfireplace.ca', location: '26 Cathedral Bluffs Dr'}).status, 'IGNORE');
+  assert.equal(visit({title: 'Vince raise units install power vent head', creator: 'adam@classicfireplace.ca', location: '9 Drumsnab Rd'}).status, 'IGNORE');
   const codes = sent[0].missing.map(m => m.code);
   assert.ok(codes.includes('SHARED_CALENDAR') && codes.includes('CUSTOMER_NUMBER') && codes.includes('SALES_ORDER'), codes.join(','));
-  assert.equal(out.sourceErrors.length, 2, 'Jay/Karen unavailable reported');
+  assert.equal(out.sourceErrors.length, 0, 'only Stephen is scanned');
   // SO missing is notifiable on CF Preinspects events too.
   const a = c.tmv3_preInspectionMissingDetailAssessment_(Object.assign(rec(0), {title: '12345 - Sample Customer - (416) 555-0100', rawDescription: '', descriptionClean: '', orderNumber: '', location: '1 Main St, Toronto'}));
   assert.deepEqual(JSON.parse(JSON.stringify(a.missing.map(m => m.code))), ['SALES_ORDER']);

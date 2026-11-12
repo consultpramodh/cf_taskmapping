@@ -2292,10 +2292,28 @@ function tmv3_preInspectionAutomationCycle_(options) {
   }
 }
 
-/** Rep calendars scanned for pre-inspections booked without CF Preinspects as a guest. */
+/** Inspector calendars scanned for pre-inspections booked without CF Preinspects as a guest.
+ * Stephen only (operator 2026-11-12): he does most pre-inspections and reps book on his calendar;
+ * Jay's and Karen's bookings always include CF Preinspects. */
 function tmv3_piOffSharedSources_() {
-  return tmv3_piReviewCalendarSources_().filter(function(s) { return s.name !== 'CF Preinspects'; })
+  return tmv3_piReviewCalendarSources_().filter(function(s) { return s.name === 'Stephen'; })
     .map(function(s) { return {calendarId:s.id,calendarName:s.name,role:'SECONDARY_OWNER'}; });
+}
+
+/** Operator rule 2026-11-12: a customer visit on an inspector calendar booked by another
+ * employee is a pre-inspection unless it is service/repair/delivery/installation/meeting. */
+function tmv3_piRepBookedIntent_(record, cfg) {
+  const base = tmv3_preInspectionDiscoveryDecision_(record, cfg);
+  if (base.status === 'EXPLICIT_PREINSPECTION' || base.status === 'IGNORE') return base;
+  const creator = tmv3_preInspectionCreatorEmail_(record);
+  if (!creator) return {status:'REVIEW_VISIT_TYPE',reason:'CREATOR_UNVERIFIED'};
+  const text = [record.title || '', record.descriptionClean || record.rawDescription || ''].join(' ');
+  if (/\b(?:service|repair|maintenance|troubleshoot(?:ing)?|delivery|install(?:ation|ing)?|meeting|follow[\s-]*up)\b/i.test(record.title || ''))
+    return {status:'IGNORE',reason:'OTHER_VISIT_TYPE_IN_TITLE'};
+  const customerVisit = !!tmv3_clean_(record.location) || !!tmv3_phone10_(record.phone || tmv3_extractPhone_(text)) ||
+    !!tmv3_clean_(record.customerNumber);
+  if (!customerVisit) return {status:'IGNORE',reason:'NO_CUSTOMER_VISIT_EVIDENCE'};
+  return {status:'EXPLICIT_PREINSPECTION',reason:'REP_BOOKED_VISIT_ON_INSPECTOR_CALENDAR'};
 }
 
 /** Cached PreInspection-intent decision per event+fingerprint (live order reads cost API calls). */
@@ -2343,13 +2361,16 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       try { record = tmv3_calendarEvent_('PreInspection', cfg, source, ev, {applyEligibility:false}); } catch (e) { return; }
       if (!record || record.status === 'cancelled' || tmv3_step2PreInspectionNonCustomer_(record)) return;
       out.checked++;
-      // Cheap Calendar-only decision first; live Sales Order check only when still unclear.
-      let intent = tmv3_preInspectionDiscoveryDecision_(record, cfg);
-      if (intent.status === 'REVIEW_VISIT_TYPE' && intent.reason !== 'CREATOR_UNVERIFIED' &&
-          intent.reason !== 'INSUFFICIENT_CUSTOMER_VISIT_EVIDENCE') {
-        if (out.liveChecks >= maxLive) { out.skippedLiveCap++; return; }
-        out.liveChecks++;
-        intent = tmv3_piOffSharedIntent_(record, props);
+      let intent = tmv3_piRepBookedIntent_(record, cfg);
+      // A Customer # or SO # lets one live Striven read catch installations booked here by mistake.
+      if (intent.status === 'EXPLICIT_PREINSPECTION' && intent.reason === 'REP_BOOKED_VISIT_ON_INSPECTOR_CALENDAR' &&
+          (record.customerNumber || record.orderNumber)) {
+        if (out.liveChecks < maxLive) {
+          out.liveChecks++;
+          const live = tmv3_piOffSharedIntent_(record, props);
+          if (live.status === 'INSTALLATION' || live.reason === 'OTHER_VERTICAL_INTENT_REQUIRES_REVIEW')
+            intent = {status:'IGNORE',reason:live.reason};
+        } else out.skippedLiveCap++;
       }
       if (intent.status !== 'EXPLICIT_PREINSPECTION') return;
       out.candidates++;
