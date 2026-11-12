@@ -211,6 +211,13 @@ function piTest_propertyClass_(key, value, todayIso) {
   if (junkExact.indexOf(key) >= 0) return {cls:'JUNK',why:'cache/diagnostic now kept in CacheService or unused'};
   if (/^TMV3_PI_(?:DONE|FAILURE|OFFSHARED_INTENT|INFERRED)_/.test(key)) return {cls:'JUNK',why:'short-lived cache'};
   if (/^TMV3_PI_CONFIRM_TEST_/.test(key)) return {cls:'JUNK',why:'test answer'};
+  const dated = /^TMV3_PI_(?:ELIGIBLE|TODAY)_CURSOR_(\d{4}-\d{2}-\d{2})$/.exec(key);
+  if (dated) return dated[1] < todayIso ? {cls:'JUNK',why:'cursor for a past day'} : {cls:'KEEP',why:'PreInspection run state'};
+  // Finished one-off fixes (Oct 2026). No code reads these keys any more.
+  if (/^TMV3_(?:SD_REQUESTED_BY_2026|OPEN_REFRESH_2026|SD_CACHE_REPAIR_PRE_|JIM_[A-Z_]*PATCH_)/.test(key))
+    return {cls:'JUNK',why:'finished one-off fix marker (no code reads it)'};
+  const range = /^TMV3_VERTICAL_SWEEP_[A-Za-z]+_RANGE_\d{4}-\d{2}-\d{2}_(\d{4}-\d{2}-\d{2})(?:_|$)/.exec(key);
+  if (range && range[1] < todayIso) return {cls:'JUNK',why:'repair sweep for a past week'};
   if (/^TMV3_PI_(?:NOTIFICATION|QUESTION)_/.test(key)) {
     const last = json && json.lastSentAt ? String(json.lastSentAt).slice(0, 10) : '';
     if (value === 'SENT' || (last && last < todayIso)) {
@@ -223,6 +230,12 @@ function piTest_propertyClass_(key, value, todayIso) {
   return {cls:'OTHER',why:'shared V3 / other vertical — not touched'};
 }
 
+/** Group label: collapses hashes, IDs and dates so similar keys show as one line. */
+function piTest_propertyGroup_(k) {
+  return k.replace(/_[0-9a-f]{16,}/ig, '_*').replace(/_\d{4}-\d{2}-\d{2}/g, '_<date>').replace(/_\d{8}_\d+$/, '_<date>_*')
+    .replace(/_\d{4,}$/, '_*').replace(/(_<date>)+/g, '_<date>');
+}
+
 /** READ-ONLY: every Script Property grouped by prefix with KEEP / JUNK / OTHER. */
 function piTest_PropertyInventory() {
   const props = PropertiesService.getScriptProperties().getProperties();
@@ -230,7 +243,7 @@ function piTest_PropertyInventory() {
   const groups = {};
   Object.keys(props).forEach(function(k) {
     const c = piTest_propertyClass_(k, props[k], today);
-    const prefix = k.replace(/_[0-9a-f]{16,}$/i, '_*').replace(/_\d{6,}$/, '_*');
+    const prefix = piTest_propertyGroup_(k);
     const g = groups[prefix] || (groups[prefix] = {prefix:prefix,count:0,KEEP:0,JUNK:0,OTHER:0,why:{}});
     g.count++; g[c.cls]++; g.why[c.why] = true;
   });
@@ -253,7 +266,7 @@ function piTest_WRITE_CleanupProperties() {
     const c = piTest_propertyClass_(k, props[k], today);
     if (c.cls !== 'JUNK') return;
     store.deleteProperty(k);
-    const prefix = k.replace(/_[0-9a-f]{16,}$/i, '_*');
+    const prefix = piTest_propertyGroup_(k);
     deleted[prefix] = (deleted[prefix] || 0) + 1;
   });
   const out = {status:'CLEANED',deleted:deleted,deletedTotal:Object.keys(deleted).reduce(function(n, k) { return n + deleted[k]; }, 0),
