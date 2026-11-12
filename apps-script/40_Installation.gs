@@ -364,7 +364,7 @@ function tmv3_installRefreshView_(reason) {
   const count=tmv3_rows_(cfg.sheet).filter(function(r){return !!tmv3_clean_(r['Event ID']);}).length;
   if(count!==decisions.length)throw Error('INSTALL_VIEW_ROW_READBACK_FAILED');
   const result={status:'INSTALL_VIEW_REFRESHED',at:new Date().toISOString(),reason:reason,rows:count,strivenWrites:0,calendarWrites:0};
-  PropertiesService.getScriptProperties().setProperty('TMV3_INSTALL_VIEW_LAST_SUCCESS',JSON.stringify(result));return result;
+  try{CacheService.getScriptCache().put('TMV3_INSTALL_VIEW_LAST_SUCCESS',JSON.stringify(result),21600);}catch(e){}return result;
 }
 
 // Original: 60_Automation; Function: tmv3_installSchedulePublication_

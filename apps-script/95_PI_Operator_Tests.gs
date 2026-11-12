@@ -204,8 +204,23 @@ function piTest_ConfirmationAnswers() {
 }
 
 /** Classify a Script Property key: KEEP (needed state), JUNK (safe to delete) or OTHER (not PreInspection: never touched). */
-function piTest_propertyClass_(key, value, todayIso) {
+function piTest_propertyClass_(key, value, todayIso, upcoming) {
   const json = piTest_json_(value);
+  // Records tied to one appointment: useful only while that appointment is still ahead.
+  // upcoming = hashes of every event from yesterday on (CF Preinspects + Stephen); null = calendars unreadable, keep all.
+  const eventKey = /^TMV3_PI_(?:NOTIFICATION|QUESTION|ORIGIN|ASSIGNMENT_OVERRIDE)_([0-9a-f]{64})$/.exec(key);
+  if (eventKey) {
+    if (upcoming && !upcoming[eventKey[1]]) return {cls:'JUNK',why:'appointment is in the past'};
+    return {cls:'KEEP',why:/NOTIFICATION|QUESTION/.test(key) ? 'stops repeat emails (appointment ahead)' : 'needed for an upcoming appointment'};
+  }
+  if (/^TMV3_LOCATION_CREATE_GUARD_/.test(key) && json && json.vertical === 'PreInspection' && json.eventId) {
+    if (upcoming && !upcoming[tmv3_hash_(json.eventId)]) return {cls:'JUNK',why:'Location guard for a past appointment'};
+    return {cls:'KEEP',why:'stops a duplicate Location for an upcoming appointment'};
+  }
+  const sentOn = /^TMV3_INSTALL_SO_REMINDER_/.test(key) && /^(\d{4}-\d{2}-\d{2})T/.exec(String(value || ''));
+  if (sentOn) return sentOn[1] < todayIso ? {cls:'JUNK',why:'"already reminded today" flag from a past day'} : {cls:'KEEP',why:'stops a second reminder today'};
+  if (/^TMV3_OWNER_BUDGET_RESET_/.test(key)) return {cls:'JUNK',why:'one-off budget reset note (no code reads it)'};
+  if (key === 'TMV3_INSTALL_VIEW_LAST_SUCCESS') return {cls:'JUNK',why:'status note no code reads (now kept in cache)'};
   const junkExact = ['TMV3_PI_LAST_RESULT','TMV3_PI_BUDGET_PAUSE_DATE','TMV3_PI_RETRY_SWEEP_START','TMV3_PI_DISCOVERY',
     'TMV3_PI_LAST_PENDING_RECONCILIATION','TMV3_PI_VERIFY_CURSOR'];
   if (junkExact.indexOf(key) >= 0) return {cls:'JUNK',why:'cache/diagnostic now kept in CacheService or unused'};
@@ -218,16 +233,25 @@ function piTest_propertyClass_(key, value, todayIso) {
     return {cls:'JUNK',why:'finished one-off fix marker (no code reads it)'};
   const range = /^TMV3_VERTICAL_SWEEP_[A-Za-z]+_RANGE_\d{4}-\d{2}-\d{2}_(\d{4}-\d{2}-\d{2})(?:_|$)/.exec(key);
   if (range && range[1] < todayIso) return {cls:'JUNK',why:'repair sweep for a past week'};
-  if (/^TMV3_PI_(?:NOTIFICATION|QUESTION)_/.test(key)) {
-    const last = json && json.lastSentAt ? String(json.lastSentAt).slice(0, 10) : '';
-    if (value === 'SENT' || (last && last < todayIso)) {
-      const ageDays = last ? Math.round((Date.parse(todayIso) - Date.parse(last)) / 86400000) : 999;
-      if (ageDays > 45) return {cls:'JUNK',why:'email record older than 45 days (appointment long past)'};
-    }
-    return {cls:'KEEP',why:'stops repeat emails'};
-  }
   if (/^TMV3_(?:PI_|PREINSPECTION_)/.test(key)) return {cls:'KEEP',why:'PreInspection run state'};
   return {cls:'OTHER',why:'shared V3 / other vertical — not touched'};
+}
+
+/** Hashes of every appointment from yesterday on, on CF Preinspects and Stephen's calendar.
+ * Returns null if either calendar can't be read, so nothing appointment-linked is deleted. */
+function piTest_upcomingEventHashes_() {
+  const cfg = TMV3.VERTICALS.PreInspection;
+  const ids = [cfg.primaryCalendarId].concat(cfg.secondaryCalendarIds || []);
+  const from = new Date(); from.setDate(from.getDate() - 1); from.setHours(0, 0, 0, 0);
+  const to = new Date(from); to.setDate(to.getDate() + 400);
+  const out = {};
+  for (let i = 0; i < ids.length; i++) {
+    let cal = null;
+    try { cal = CalendarApp.getCalendarById(ids[i]); } catch (e) {}
+    if (!cal) return null;
+    cal.getEvents(from, to).forEach(function(ev) { out[tmv3_hash_(ev.getId())] = true; });
+  }
+  return out;
 }
 
 /** Group label: collapses hashes, IDs and dates so similar keys show as one line. */
@@ -240,9 +264,11 @@ function piTest_propertyGroup_(k) {
 function piTest_PropertyInventory() {
   const props = PropertiesService.getScriptProperties().getProperties();
   const today = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const upcoming = piTest_upcomingEventHashes_();
+  if (!upcoming) Logger.log('PI_PROPS_NOTE=calendars unreadable: appointment-linked records kept');
   const groups = {};
   Object.keys(props).forEach(function(k) {
-    const c = piTest_propertyClass_(k, props[k], today);
+    const c = piTest_propertyClass_(k, props[k], today, upcoming);
     const prefix = piTest_propertyGroup_(k);
     const g = groups[prefix] || (groups[prefix] = {prefix:prefix,count:0,KEEP:0,JUNK:0,OTHER:0,why:{}});
     g.count++; g[c.cls]++; g.why[c.why] = true;
@@ -261,9 +287,10 @@ function piTest_WRITE_CleanupProperties() {
   const store = PropertiesService.getScriptProperties();
   const props = store.getProperties();
   const today = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const upcoming = piTest_upcomingEventHashes_();
   const deleted = {};
   Object.keys(props).forEach(function(k) {
-    const c = piTest_propertyClass_(k, props[k], today);
+    const c = piTest_propertyClass_(k, props[k], today, upcoming);
     if (c.cls !== 'JUNK') return;
     store.deleteProperty(k);
     const prefix = piTest_propertyGroup_(k);
