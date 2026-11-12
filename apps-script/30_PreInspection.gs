@@ -2671,6 +2671,14 @@ function tmv3_runPreInspectionDailySlot_(slot) {
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
   let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,reason:'DAILY_SLOT_' + slot});
+  // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
+  // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of
+  // giving the whole slot up; the batch time limit below still ends the slot well inside 6 minutes.
+  const lockRetries = [];
+  while (result.status === 'LOCK_BUSY' && Date.now() - sheetRefreshStarted < 150000) {
+    lockRetries.push(new Date().toISOString());
+    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
+  }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),
     notifications:Number(result.notifications || 0),results:(result.results || []).slice()};
   let priorRemaining = result.sweep && result.sweep.remaining;
@@ -2686,6 +2694,7 @@ function tmv3_runPreInspectionDailySlot_(slot) {
     priorRemaining = next.sweep.remaining; result = next;
   }
   result.batchStatuses = batchStatuses;
+  if (lockRetries.length) result.lockRetries = lockRetries.length;
   result.processed = totals.processed; result.writes = totals.writes;
   result.notifications = totals.notifications; result.results = totals.results;
   if (result.status === 'LOCK_BUSY' && TMV3_PI_EPHEMERAL_STATE_IN_CACHE !== true) PropertiesService.getScriptProperties().setProperty('TMV3_PI_RETRY_SWEEP_START', '1');
