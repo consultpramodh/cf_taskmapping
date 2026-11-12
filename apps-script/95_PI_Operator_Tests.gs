@@ -255,3 +255,34 @@ function piTest_SendTestEmails() {
   return out;
 }
 
+/** TEST: send the YES/NO question for every unclear Stephen-calendar booking to Pramodh only.
+ * Clicking a TEST button records a test answer and never changes the appointment's classification. */
+function piTest_SendQuestionTest() {
+  if (PI_TEST_EMAIL_TO !== 'pramodh@classicfireplace.ca') throw new Error('PI_TEST_RECIPIENT_CHANGED');
+  const saved = tmv3_piSendMissingDetailsAfterRelease_;
+  let off;
+  try {
+    tmv3_piSendMissingDetailsAfterRelease_ = function() { return {status:'SUPPRESSED_FOR_QUESTION_TEST',sent:0}; };
+    off = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12});
+  } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }
+  const sent = (off.reviewRecords || []).map(function(record) {
+    const q = tmv3_piVisitQuestionEmail_(record, true);
+    const message = {to:PI_TEST_EMAIL_TO,subject:'TEST ' + q.subject,body:q.body,htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'};
+    if (message.to !== PI_TEST_EMAIL_TO || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
+    MailApp.sendEmail(message);
+    return {subject:message.subject,wouldGoTo:q.recipient};
+  });
+  const out = {status:'TEST_QUESTIONS_SENT',to:PI_TEST_EMAIL_TO,count:sent.length,emails:sent};
+  Logger.log('PI_TEST_QUESTIONS=' + JSON.stringify(out));
+  return out;
+}
+
+/** READ-ONLY: answers recorded from TEST question emails (and any live answers). */
+function piTest_ConfirmationAnswers() {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const rows = Object.keys(props).filter(function(k) { return /^TMV3_PI_CONFIRM_(?:TEST_)?[0-9a-f]+$/.test(k); })
+    .map(function(k) { return Object.assign({kind:k.indexOf('_TEST_') > 0 ? 'TEST' : 'LIVE'}, piTest_json_(props[k])); });
+  Logger.log('PI_CONFIRM_ANSWERS=' + JSON.stringify(rows));
+  return rows;
+}
+

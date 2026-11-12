@@ -61,11 +61,13 @@ function createServices(log) {
     Logger: {log: () => {}},
     Utilities: {
       formatDate,
-      base64EncodeWebSafe: s => Buffer.from(String(s)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_'),
       computeDigest: (alg, s) => Array.from(require('node:crypto').createHash('sha256').update(String(s)).digest()).map(b => b > 127 ? b - 256 : b),
       DigestAlgorithm: {SHA_256: 'SHA_256', MD5: 'MD5'},
       Charset: {UTF_8: 'UTF_8'},
-      sleep: () => {}
+      sleep: () => {},
+      getUuid: () => require('node:crypto').randomUUID(),
+      computeHmacSha256Signature: (v, k) => Array.from(require('node:crypto').createHmac('sha256', String(k)).update(String(v)).digest()).map(b => b > 127 ? b - 256 : b),
+      base64EncodeWebSafe: s => Buffer.from(Array.isArray(s) ? s.map(b => (b + 256) % 256) : String(s)).toString('base64').replace(/\+/g, '-').replace(/\//g, '_')
     },
     MailApp: {
       getRemainingDailyQuota: () => 100,
@@ -79,9 +81,9 @@ function createServices(log) {
     },
     SpreadsheetApp: {openById() { record('SHEET_OPEN'); throw new Error('SHEETS_BLOCKED_IN_HARNESS'); }, flush() {}},
     UrlFetchApp: {fetch() { record('HTTP'); throw new Error('NETWORK_BLOCKED_IN_HARNESS'); }},
-    Session: {getActiveUser: () => ({getEmail: () => 'harness@example.invalid'}), getScriptTimeZone: () => 'America/Toronto'},
+    Session: {getActiveUser: () => ({getEmail: () => (globalThis.__HARNESS_USER__ || 'harness@example.invalid')}), getScriptTimeZone: () => 'America/Toronto'},
     CacheService: {getScriptCache: () => ({get: () => null, put() {}, remove() {}})},
-    HtmlService: {}, ContentService: {}
+    HtmlService: {createHtmlOutput: html => ({html: String(html), setTitle() { return this; }})}, ContentService: {}
   };
 }
 

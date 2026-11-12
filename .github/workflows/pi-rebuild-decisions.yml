@@ -35,3 +35,5 @@ jobs:
         run: node tests/preinspection/calendar-title-writer.test.cjs
       - name: Slot simulation is read-only
         run: node tests/preinspection/slot-simulation.test.cjs
+      - name: YES/NO visit confirmation links
+        run: node tests/preinspection/visit-confirmation.test.cjs

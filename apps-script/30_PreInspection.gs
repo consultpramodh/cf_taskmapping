@@ -35,6 +35,9 @@ var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;
 // Daily slots also find verified pre-inspections booked on rep calendars without
 // CF Preinspects as a guest, and notify the creator. No Task until it is shared.
 var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
+// "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
+// question email is approved (send a TEST first with piTest_SendQuestionTest).
+var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
 
 const TMV3_PI_REVISION = '2026-11-11-r7';
 
@@ -2410,8 +2413,16 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
             intent = {status:'IGNORE',reason:live.reason};
         } else out.skippedLiveCap++;
       }
+      const answered = tmv3_piVisitConfirmation_(record.eventId);
+      if (answered && answered.answer === 'NO') return;
+      if (answered && answered.answer === 'YES') intent = {status:'EXPLICIT_PREINSPECTION',reason:'CONFIRMED_BY_' + answered.by};
       if (intent.status === 'REVIEW_VISIT_TYPE') {
         out.reviewNoEmail = (out.reviewNoEmail || []).concat([{eventId:record.eventId,title:record.title,reason:intent.reason}]);
+        out.reviewRecords = (out.reviewRecords || []).concat([record]);
+        if (TMV3_PI_VISIT_QUESTIONS_ENABLED === true) {
+          try { out.questions = (out.questions || []).concat([tmv3_piSendVisitQuestion_(record)]); }
+          catch (e) { out.questions = (out.questions || []).concat([{eventId:record.eventId,status:'ERROR',error:String(e).slice(0, 160)}]); }
+        }
         return;
       }
       if (intent.status !== 'EXPLICIT_PREINSPECTION') return;
@@ -2431,6 +2442,128 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       skippedLiveCap:out.skippedLiveCap,sourceErrors:out.sourceErrors,
       events:out.events.map(function(e) { return {eventId:e.eventId,source:e.source,status:e.notification.status}; })}));
   return out;
+}
+
+// --- "Is this a pre-inspection?" confirmation (YES/NO links to this script's web app) ---
+
+function tmv3_piConfirmSecret_() {
+  const props = PropertiesService.getScriptProperties();
+  let secret = props.getProperty('TMV3_PI_CONFIRM_SECRET');
+  if (!secret) { secret = Utilities.getUuid() + Utilities.getUuid(); props.setProperty('TMV3_PI_CONFIRM_SECRET', secret); }
+  return secret;
+}
+
+function tmv3_piConfirmSig_(eventId, answer, test) {
+  const raw = Utilities.computeHmacSha256Signature(String(eventId) + '|' + answer + '|' + (test ? 'T' : 'L'), tmv3_piConfirmSecret_());
+  return Utilities.base64EncodeWebSafe(raw).replace(/=+$/, '');
+}
+
+function tmv3_piConfirmLink_(eventId, answer, test) {
+  let base = PropertiesService.getScriptProperties().getProperty('TMV3_PI_CONFIRM_WEBAPP_URL') || '';
+  if (!base) { try { base = String(ScriptApp.getService().getUrl() || ''); } catch (e) {} }
+  if (!/^https:\/\/script\.google\.com\//.test(base)) throw new Error('PI_CONFIRM_WEBAPP_URL_NOT_SET');
+  return base + '?pi=confirm&e=' + encodeURIComponent(eventId) + '&a=' + answer + (test ? '&t=1' : '') +
+    '&s=' + tmv3_piConfirmSig_(eventId, answer, test);
+}
+
+function tmv3_piConfirmKey_(eventId, test) {
+  return (test ? 'TMV3_PI_CONFIRM_TEST_' : 'TMV3_PI_CONFIRM_') + tmv3_hash_(String(eventId).toLowerCase());
+}
+
+/** Recorded live answer for an event: {answer:'YES'|'NO', by, at} or null. */
+function tmv3_piVisitConfirmation_(eventId) {
+  const raw = PropertiesService.getScriptProperties().getProperty(tmv3_piConfirmKey_(eventId, false));
+  if (!raw) return null;
+  try { const v = JSON.parse(raw); return v && (v.answer === 'YES' || v.answer === 'NO') ? v : null; } catch (e) { return null; }
+}
+
+/** Web app entry: records a signed YES/NO answer. Test links never change live decisions. */
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p.pi !== 'confirm') return HtmlService.createHtmlOutput('Classic Fireplace &amp; BBQ Store');
+  const eventId = String(p.e || ''), answer = String(p.a || '').toUpperCase(), test = p.t === '1';
+  let message;
+  if (!/^[a-z0-9_]+@google\.com$/i.test(eventId) || (answer !== 'YES' && answer !== 'NO') ||
+      String(p.s || '') !== tmv3_piConfirmSig_(eventId, answer, test)) {
+    message = 'This link is not valid. Nothing was recorded.';
+  } else {
+    let by = '';
+    try { by = String(Session.getActiveUser().getEmail() || '').toLowerCase(); } catch (ignored) {}
+    const at = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd HH:mm');
+    const value = {answer:answer,by:by || 'unknown',at:at,test:test};
+    PropertiesService.getScriptProperties().setProperty(tmv3_piConfirmKey_(eventId, test), JSON.stringify(value));
+    tmv3_audit_('PreInspection', eventId, '', test ? 'PI_VISIT_CONFIRM_TEST' : 'PI_VISIT_CONFIRM', answer, JSON.stringify(value));
+    if (!test) { try { tmv3_piRecordConfirmationInReview_(eventId, value); } catch (ignored) {} }
+    message = (test ? 'TEST — ' : '') + 'Thank you. Recorded: ' + (answer === 'YES' ? 'YES, this is a pre-inspection.' : 'NO, this is not a pre-inspection.') +
+      (test ? ' (Test answer: the appointment was not changed.)' : '');
+  }
+  return HtmlService.createHtmlOutput('<div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:40px auto;padding:24px;border:1px solid #e2e0dc;">' +
+    '<div style="font-weight:700;margin-bottom:8px;">Classic Fireplace &amp; BBQ Store</div><div>' + tmv3_preInspectionHtmlEscape_(message) + '</div></div>')
+    .setTitle('Pre-Inspection confirmation');
+}
+
+/** Write the answer into the PI Calendar Review sheet (Operator Decision / Notes). */
+function tmv3_piRecordConfirmationInReview_(eventId, value) {
+  const sheet = SpreadsheetApp.openById(TMV3_SPREADSHEET_ID).getSheetByName('PI Calendar Review');
+  if (!sheet || sheet.getLastRow() < 4) return;
+  const bare = String(eventId).replace(/@google\.com$/i, '');
+  const ids = sheet.getRange(4, 9, sheet.getLastRow() - 3, 1).getValues();
+  for (let i = 0; i < ids.length; i++) {
+    if (String(ids[i][0]) !== bare) continue;
+    sheet.getRange(4 + i, 19, 1, 2).setValues([[value.answer === 'YES' ? 'YES – pre-inspection' : 'NO – not a pre-inspection',
+      'Answered by ' + value.by + ' on ' + value.at]]);
+  }
+}
+
+/** Question email: same look as the approved notification. */
+function tmv3_piVisitQuestionEmail_(record, test) {
+  const esc = tmv3_preInspectionHtmlEscape_;
+  const when = Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'MMM d, yyyy') + ' · ' +
+    Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'h:mm a') + ' – ' + Utilities.formatDate(new Date(record.end), TMV3_TIMEZONE, 'h:mm a');
+  const creator = tmv3_preInspectionCreatorEmail_(record);
+  const yes = tmv3_piConfirmLink_(record.eventId, 'YES', test), no = tmv3_piConfirmLink_(record.eventId, 'NO', test);
+  const button = function(href, label, bg) {
+    return '<a href="' + esc(href) + '" style="display:inline-block;padding:12px 28px;margin-right:12px;background:' + bg +
+      ';color:#ffffff;font-weight:700;text-decoration:none;border-radius:4px;">' + label + '</a>';
+  };
+  const html = '<!doctype html><html lang="en"><body style="margin:0;padding:0;background:#f4f3f1;font-family:Arial,Helvetica,sans-serif;color:#222;">' +
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
+    '<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;">' +
+    '<tr><td style="background:#202020;border-top:4px solid #b42b2f;padding:18px 24px;"><div style="font-size:18px;font-weight:700;color:#ffffff;">Is this a Pre-Inspection?</div>' +
+    '<div style="font-size:12px;color:#aaaaaa;margin-top:3px;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '<tr><td style="padding:20px 24px 12px;"><div style="font-size:12px;color:#666;font-style:italic;margin-bottom:16px;">This is an automated email notification from Classic Fireplace &amp; BBQ Store.</div>' +
+    '<div style="font-size:14px;line-height:21px;">Hi <strong>' + esc(tmv3_preInspectionCreatorFirstName_(creator)) + '</strong>,</div>' +
+    '<div style="font-size:14px;line-height:21px;margin-top:8px;">You booked this appointment on Stephen\'s calendar. We could not tell from the details whether it is a pre-inspection.</div>' +
+    '<div style="margin-top:12px;padding:12px;background:#f6f5f3;border:1px solid #e2e0dc;"><strong>' + esc(record.title || '(Untitled event)') + '</strong><br>' +
+    esc(when) + '<br>' + esc(record.location || 'Location missing') + '</div>' +
+    '<div style="font-size:14px;margin:18px 0 6px;">Is this appointment a pre-inspection?</div>' +
+    '<div style="margin:10px 0 18px;">' + button(yes, 'YES', '#256b35') + button(no, 'NO', '#6b6b6b') + '</div>' +
+    '<div style="font-size:12px;color:#666;">If YES, please also add the CF Preinspects calendar as a guest.</div></td></tr>' +
+    '<tr><td style="background:#202020;padding:12px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return {recipient:creator,subject:'IS THIS A PRE-INSPECTION?: ' + (record.title || 'Appointment') + ' | ' + when,htmlBody:html,
+    body:'Is this a pre-inspection? YES: ' + yes + '  NO: ' + no};
+}
+
+/** Live question send: creator only, one per business day until answered, before the visit. */
+function tmv3_piSendVisitQuestion_(record) {
+  const q = tmv3_piVisitQuestionEmail_(record, false);
+  if (!q.recipient) return {eventId:record.eventId,status:'CREATOR_UNVERIFIED_NO_SEND'};
+  if (tmv3_piCreatorEmailExcluded_(q.recipient)) return {eventId:record.eventId,status:'EXCLUDED_CREATOR_NO_SEND'};
+  if (TMV3_PI_CREATOR_EMAILS_ENABLED !== true || TMV3.MODE !== 'PRODUCTION_WRITE') return {eventId:record.eventId,status:'DELIVERY_GATED'};
+  const props = PropertiesService.getScriptProperties();
+  const key = 'TMV3_PI_QUESTION_' + tmv3_hash_(record.eventId);
+  let state = null;
+  try { state = JSON.parse(props.getProperty(key) || 'null'); } catch (e) { return {eventId:record.eventId,status:'UNCERTAIN_SEND_NO_RETRY'}; }
+  const d = tmv3_preInspectionNotificationDecision_(record, state);
+  if (!d.send) return {eventId:record.eventId,status:d.status};
+  const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
+  props.setProperty(key, JSON.stringify(next));
+  MailApp.sendEmail({to:q.recipient,subject:(d.followupNumber ? 'FOLLOW-UP #' + d.followupNumber + ' | ' : '') + q.subject,
+    body:q.body,htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'});
+  next.status = 'SENT'; props.setProperty(key, JSON.stringify(next));
+  tmv3_audit_('PreInspection', record.eventId, '', 'PI_VISIT_QUESTION', 'SENT', JSON.stringify({to:q.recipient}));
+  return {eventId:record.eventId,status:'SENT',to:q.recipient};
 }
 
 // =====================================================================
