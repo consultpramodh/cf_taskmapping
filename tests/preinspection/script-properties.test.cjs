@@ -45,7 +45,17 @@ const seed = {
   TMV3_LOCATION_CREATE_GUARD_g1: JSON.stringify({vertical:'PreInspection', eventId:'past@google.com'}),
   TMV3_LOCATION_CREATE_GUARD_g2: JSON.stringify({vertical:'PreInspection', eventId:'soon@google.com'})};
 // Upcoming appointments: notification 5…, origin b…, and the 'soon' event.
-c.piTest_upcomingEventHashes_ = () => ({['5'.repeat(64)]: true, ['b'.repeat(64)]: true, [c.tmv3_hash_('soon@google.com')]: true});
+c.piTest_upcomingEventHashes_ = () => ({['5'.repeat(64)]: true, ['b'.repeat(64)]: true,
+  ids: {'soon@google.com': true, 'inst-soon@google.com': true},
+  byVertical: {[c.tmv3_hash_('Install|inst-soon@google.com')]: true}});
+Object.assign(seed, {
+  ['TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Install|inst-past@google.com')]: '{"state":"VERIFIED"}',
+  ['TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Install|inst-soon@google.com')]: '{"state":"VERIFIED"}',
+  ['TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Service|svc-past@google.com')]: '{"state":"UNCERTAIN"}',
+  TMV3_TASK_CREATE_GUARD_t1: JSON.stringify({vertical:'Install', eventId:'inst-past@google.com', state:'VERIFIED'}),
+  TMV3_TASK_CREATE_GUARD_t2: JSON.stringify({vertical:'Install', eventId:'inst-past@google.com', state:'INTENT'}),
+  TMV3_VERTICAL_ALERT_a1: 'SENT', TMV3_VERTICAL_LAST_Service: '{}', TMV3_SD_ORDER_BACKFILL_20261020_19223: '{"state":"VERIFIED"}'});
+Object.entries(seed).forEach(([k, v]) => env.props.setProperty(k, v));
 Object.entries(seed).forEach(([k, v]) => env.props.setProperty(k, v));
 const inv = c.piTest_PropertyInventory();
 assert.ok(inv.totals.JUNK >= 6);
@@ -53,7 +63,9 @@ const out = c.piTest_WRITE_CleanupProperties();
 const left = Object.keys(env.props.store).sort();
 ['TMV3_PI_NOTIFICATION_5555555555555555555555555555555555555555555555555555555555555555', 'TMV3_PI_PENDING_EVENTS', 'TMV3_PI_SWEEP_STATE', 'TMV3_PI_CONFIRM_SECRET',
   'TMV3_PI_CONFIRM_WEBAPP_URL', 'TMV3_PI_CONFIRM_6666666666666666', 'TMV3_DURABLE_WRITE_GUARD_abc', 'TMV3_SERVICE_CURSOR',
-  'TMV3_PI_ELIGIBLE_CURSOR_2026-11-12', 'TMV3_SD_ORDER_BACKFILL_20261020_19223', 'TMV3_VERTICAL_SWEEP_Service',
+  'TMV3_PI_ELIGIBLE_CURSOR_2026-11-12', 'TMV3_VERTICAL_SWEEP_Service',
+  'TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Install|inst-soon@google.com'), 'TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Service|svc-past@google.com'),
+  'TMV3_TASK_CREATE_GUARD_t2',
   'TMV3_PI_ORIGIN_' + 'b'.repeat(64), 'TMV3_INSTALL_SO_REMINDER_x2', 'TMV3_INSTALL_SO_REMINDER_x3',
   'TMV3_LAST_MASTER_SOURCE_REFRESH', 'TMV3_LOCATION_CREATE_GUARD_g2']
   .forEach(k => assert.ok(left.includes(k), 'kept ' + k));
@@ -62,9 +74,11 @@ const left = Object.keys(env.props.store).sort();
   'TMV3_SD_REQUESTED_BY_20261021_19275', 'TMV3_OPEN_REFRESH_20261021_TASK_18908', 'TMV3_PI_ELIGIBLE_CURSOR_2026-10-19',
   'TMV3_VERTICAL_SWEEP_Service_RANGE_2026-10-26_2026-11-02_IDS_0',
   'TMV3_PI_ORIGIN_' + 'a'.repeat(64), 'TMV3_INSTALL_SO_REMINDER_x1', 'TMV3_OWNER_BUDGET_RESET_20261021',
-  'TMV3_INSTALL_VIEW_LAST_SUCCESS', 'TMV3_LOCATION_CREATE_GUARD_g1']
+  'TMV3_INSTALL_VIEW_LAST_SUCCESS', 'TMV3_LOCATION_CREATE_GUARD_g1', 'TMV3_SD_ORDER_BACKFILL_20261020_19223',
+  'TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Install|inst-past@google.com'), 'TMV3_TASK_CREATE_GUARD_t1',
+  'TMV3_VERTICAL_ALERT_a1', 'TMV3_VERTICAL_LAST_Service']
   .forEach(k => assert.ok(!left.includes(k), 'deleted ' + k));
-assert.equal(out.deletedTotal, 15);
+assert.equal(out.deletedTotal, 20);
 // Calendars unreadable: nothing appointment-linked is deleted.
 c.piTest_upcomingEventHashes_ = () => null;
 env.props.setProperty('TMV3_PI_ORIGIN_' + 'c'.repeat(64), '{}');

@@ -213,10 +213,24 @@ function piTest_propertyClass_(key, value, todayIso, upcoming) {
     if (upcoming && !upcoming[eventKey[1]]) return {cls:'JUNK',why:'appointment is in the past'};
     return {cls:'KEEP',why:/NOTIFICATION|QUESTION/.test(key) ? 'stops repeat emails (appointment ahead)' : 'needed for an upcoming appointment'};
   }
-  if (/^TMV3_LOCATION_CREATE_GUARD_/.test(key) && json && json.vertical === 'PreInspection' && json.eventId) {
-    if (upcoming && !upcoming[tmv3_hash_(json.eventId)]) return {cls:'JUNK',why:'Location guard for a past appointment'};
-    return {cls:'KEEP',why:'stops a duplicate Location for an upcoming appointment'};
+  const unfinished = json && ['INTENT','UNCERTAIN','SENDING'].indexOf(json.state) >= 0;
+  if (/^TMV3_(?:TASK|LOCATION)_CREATE_GUARD_/.test(key) && json && json.eventId) {
+    if (unfinished) return {cls:'KEEP',why:'unfinished write: check Striven for this appointment first'};
+    if (upcoming && !upcoming.ids[json.eventId]) return {cls:'JUNK',why:'duplicate-create guard for a past appointment'};
+    return {cls:'KEEP',why:'stops a duplicate Task/Location for an upcoming appointment'};
   }
+  const vEvent = /^TMV3_VERTICAL_EVENT_([0-9a-f]{64})$/.exec(key);
+  if (vEvent) {
+    if (unfinished) return {cls:'KEEP',why:'unfinished write: check Striven for this appointment first'};
+    if (upcoming && !upcoming.byVertical[vEvent[1]]) return {cls:'JUNK',why:'write record for a past appointment'};
+    return {cls:'KEEP',why:'write record for an upcoming appointment'};
+  }
+  if (/^TMV3_VERTICAL_ALERT_/.test(key)) return value === 'SENT' ? {cls:'JUNK',why:'failure-alert "sent today" flag'} : {cls:'KEEP',why:'alert being sent'};
+  if (/^TMV3_VERTICAL_(?:LAST|CURSOR)_/.test(key) || key === 'TMV3_STANDARD_SCHEDULE')
+    return {cls:'JUNK',why:'old status/cursor no code reads'};
+  if (/^TMV3_SD_ORDER_BACKFILL_20261020_/.test(key))
+    return typeof TMV3_SD_ORDER_BACKFILL_RETIRED !== 'undefined' && TMV3_SD_ORDER_BACKFILL_RETIRED === true ?
+      {cls:'JUNK',why:'one-time Oct 20 order backfill (retired)'} : {cls:'KEEP',why:'Oct 20 order backfill still running (retire it in 10_Shared_Core first)'};
   const sentOn = /^TMV3_INSTALL_SO_REMINDER_/.test(key) && /^(\d{4}-\d{2}-\d{2})T/.exec(String(value || ''));
   if (sentOn) return sentOn[1] < todayIso ? {cls:'JUNK',why:'"already reminded today" flag from a past day'} : {cls:'KEEP',why:'stops a second reminder today'};
   if (/^TMV3_OWNER_BUDGET_RESET_/.test(key)) return {cls:'JUNK',why:'one-off budget reset note (no code reads it)'};
@@ -237,19 +251,28 @@ function piTest_propertyClass_(key, value, todayIso, upcoming) {
   return {cls:'OTHER',why:'shared V3 / other vertical — not touched'};
 }
 
-/** Hashes of every appointment from yesterday on, on CF Preinspects and Stephen's calendar.
- * Returns null if either calendar can't be read, so nothing appointment-linked is deleted. */
+/** Every appointment from yesterday on, on every workflow calendar (PreInspection incl. Stephen,
+ * Install, Delivery, Service technicians). Returns null if any calendar can't be read, so nothing
+ * appointment-linked is deleted on a bad read. */
 function piTest_upcomingEventHashes_() {
-  const cfg = TMV3.VERTICALS.PreInspection;
-  const ids = [cfg.primaryCalendarId].concat(cfg.secondaryCalendarIds || []);
   const from = new Date(); from.setDate(from.getDate() - 1); from.setHours(0, 0, 0, 0);
   const to = new Date(from); to.setDate(to.getDate() + 400);
-  const out = {};
-  for (let i = 0; i < ids.length; i++) {
-    let cal = null;
-    try { cal = CalendarApp.getCalendarById(ids[i]); } catch (e) {}
-    if (!cal) return null;
-    cal.getEvents(from, to).forEach(function(ev) { out[tmv3_hash_(ev.getId())] = true; });
+  const out = {ids:{}, byVertical:{}};
+  const verticals = ['PreInspection', 'Install', 'Delivery', 'Service'];
+  for (let v = 0; v < verticals.length; v++) {
+    const name = verticals[v], cfg = TMV3.VERTICALS[name];
+    const ids = tmv3_verticalCalendars_(name, cfg).map(function(c) { return c.calendarId; })
+      .concat(name === 'PreInspection' ? (cfg.secondaryCalendarIds || []) : []);
+    for (let i = 0; i < ids.length; i++) {
+      let cal = null;
+      try { cal = CalendarApp.getCalendarById(ids[i]); } catch (e) {}
+      if (!cal) return null;
+      cal.getEvents(from, to).forEach(function(ev) {
+        const id = ev.getId();
+        out[tmv3_hash_(id)] = true; out.ids[id] = true;
+        verticals.forEach(function(vv) { out.byVertical[tmv3_hash_(vv + '|' + id)] = true; });
+      });
+    }
   }
   return out;
 }
@@ -278,6 +301,14 @@ function piTest_PropertyInventory() {
   const totals = list.reduce(function(t, g) { t.total += g.count; t.KEEP += g.KEEP; t.JUNK += g.JUNK; t.OTHER += g.OTHER; return t; },
     {total:0,KEEP:0,JUNK:0,OTHER:0});
   Logger.log('PI_PROPS_TOTALS=' + JSON.stringify(totals));
+  const backfill = {};
+  Object.keys(props).forEach(function(k) {
+    if (!/^TMV3_SD_ORDER_BACKFILL_20261020_\d+$/.test(k)) return;
+    const st = (piTest_json_(props[k]) || {}).state || 'UNKNOWN'; backfill[st] = (backfill[st] || 0) + 1;
+  });
+  if (Object.keys(backfill).length) Logger.log('PI_PROPS_BACKFILL_STATES=' + JSON.stringify(backfill));
+  const unfinished = list.filter(function(g) { return /unfinished write/.test(g.why); });
+  if (unfinished.length) Logger.log('PI_PROPS_UNFINISHED=' + JSON.stringify(unfinished.map(function(g) { return g.prefix; })));
   list.forEach(function(g) { Logger.log('PI_PROPS_GROUP=' + JSON.stringify(g)); });
   return {totals:totals,groups:list};
 }
