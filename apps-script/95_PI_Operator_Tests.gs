@@ -36,7 +36,7 @@ function piTest_SimulateSlot() {
   const isPiKey = function(k) { return /^TMV3_(?:PI_|PREINSPECTION_)/.test(k); };
   const before = props.getProperties();
   const titles = {};
-  const would = {executions:[],emails:[],alerts:[],audit:0,cacheWrites:0};
+  const would = {executions:[],emails:[],emailRecords:[],alerts:[],audit:0,cacheWrites:0};
   const names = ['tmv3_executeFreshStep7Selection_','tmv3_piSendMissingDetailsAfterRelease_','tmv3_preInspectionFailureAlert_',
     'tmv3_audit_','tmv3_upsertTaskCacheRow_','tmv3_preInspectionOptionalOrderLocationEvidence_','tmv3_piCalendarReviewRefresh_',
     'tmv3_preInspectionRefreshOperatorView_','tmv3_refreshAutomationSheetsAfter_'];
@@ -53,7 +53,10 @@ function piTest_SimulateSlot() {
     };
     tmv3_piSendMissingDetailsAfterRelease_ = function(record) {
       const row = piTest_noticeRow_(record);
-      if (row.missing.length && !would.emails.some(function(e) { return e.title === row.title && e.start === row.start; })) would.emails.push(row);
+      if (row.missing.length && !would.emails.some(function(e) { return e.title === row.title && e.start === row.start; })) {
+        would.emails.push(row);
+        would.emailRecords.push(record);
+      }
       return {status:'SIMULATED_NOT_SENT',sent:0};
     };
     tmv3_preInspectionFailureAlert_ = function(eventId, err) { would.alerts.push({eventId:eventId,error:String(err).slice(0, 200)}); return {status:'SIMULATED'}; };
@@ -88,7 +91,7 @@ function piTest_SimulateSlot() {
     wouldSendEmails:would.emails.filter(function(x) { return x.wouldSendNow; }).length,
     wouldAlert:would.alerts.length,offShared:result && result.offShared && {checked:result.offShared.checked,candidates:result.offShared.candidates,
       reviewNoEmail:result.offShared.reviewNoEmail || []},
-    events:perEvent,emails:would.emails,alerts:would.alerts,propertiesRestored:true};
+    events:perEvent,emails:would.emails,emailRecords:would.emailRecords,alerts:would.alerts,propertiesRestored:true};
   Logger.log('PI_SIM_SUMMARY=' + JSON.stringify({status:out.status,slotStatus:out.slotStatus,events:perEvent.length,
     wouldWriteTasks:out.wouldWriteTasks,wouldSendEmails:out.wouldSendEmails,wouldAlert:out.wouldAlert,sweep:out.sweep,error:error}));
   perEvent.forEach(function(e) { Logger.log('PI_SIM_EVENT=' + JSON.stringify(e)); });
@@ -218,3 +221,37 @@ function piTest_PreviewNotices() {
     return out;
   } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }
 }
+
+const PI_TEST_EMAIL_TO = 'pramodh@classicfireplace.ca';
+
+/**
+ * TEST SEND: every missing-details email the next slot would produce, rendered with the
+ * approved template and sent ONLY to PI_TEST_EMAIL_TO with "TEST " added to the subject.
+ * No CC/BCC. Does not touch the real notification state, so live sends are unaffected.
+ */
+function piTest_SendTestEmails() {
+  if (PI_TEST_EMAIL_TO !== 'pramodh@classicfireplace.ca') throw new Error('PI_TEST_RECIPIENT_CHANGED');
+  const sim = piTest_SimulateSlot();
+  if (sim.status !== 'SIMULATED_NO_WRITES') throw new Error('PI_TEST_SIMULATION_FAILED: ' + sim.error);
+  const records = (sim.emailRecords || []).filter(function(r) {
+    const a = tmv3_preInspectionMissingDetailAssessment_(r);
+    return a.shouldNotify && tmv3_normEmail_(a.creatorEmail) && !tmv3_piCreatorEmailExcluded_(a.creatorEmail);
+  });
+  if (MailApp.getRemainingDailyQuota() < records.length + 1) throw new Error('PI_TEST_EMAIL_QUOTA_LOW');
+  const sent = [];
+  records.forEach(function(record) {
+    const email = tmv3_preInspectionMissingDetailEmailPreview_(Object.assign({}, record, {notificationFollowupNumber:0}));
+    if (!email) return;
+    const assessment = tmv3_preInspectionMissingDetailAssessment_(record);
+    const message = {to:PI_TEST_EMAIL_TO,subject:'TEST ' + email.subject,
+      body:'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; '),
+      htmlBody:email.htmlBody,name:'Classic Fireplace & BBQ Store'};
+    if (message.to !== PI_TEST_EMAIL_TO || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
+    MailApp.sendEmail(message);
+    sent.push({subject:message.subject,wouldGoTo:email.recipient,wouldCc:email.cc});
+  });
+  const out = {status:'TEST_EMAILS_SENT',to:PI_TEST_EMAIL_TO,count:sent.length,emails:sent};
+  Logger.log('PI_TEST_EMAILS=' + JSON.stringify(out));
+  return out;
+}
+

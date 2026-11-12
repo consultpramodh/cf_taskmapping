@@ -61,4 +61,11 @@ assert.equal(snap(), before, 'Script Properties restored exactly');
 assert.equal(c.TMV3_PI_CLEANED_RELEASE_APPROVED, false);
 c.tmv3_executeFreshStep7Selection_({contract: {}});
 assert.equal(realExecutions, 1, 'real executor restored');
+// Test send: only to Pramodh, TEST prefix, no CC, no notification state written.
+const stateBefore = snap();
+const r2 = c.piTest_SendTestEmails();
+const mails = env.log.filter(e => e.kind === 'MAIL');
+assert.equal(r2.count, mails.length); assert.ok(mails.length >= 1);
+mails.forEach(m => { assert.equal(m.to, 'pramodh@classicfireplace.ca'); assert.ok(!m.cc); assert.match(m.subject, /^TEST MISSING DETAILS: /); });
+assert.equal(snap(), stateBefore, 'no notification state written by test send');
 console.log('PASS: slot simulation evaluates all events, records writes/emails, writes nothing, restores state');
