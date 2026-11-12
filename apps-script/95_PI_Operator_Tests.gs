@@ -5,6 +5,7 @@
 //   piTest_PreviewNotices()           READ-ONLY: who would get a missing-details email now
 //   piTest_SendTestEmails()           sends next-slot missing-details emails to Pramodh only, TEST subject
 //   piTest_SendQuestionTest()         missing-details email with YES/NO buttons, to Pramodh only, TEST subject
+//   piTest_SendFormatOptions()        sends email layouts A / B / C to Pramodh only, to compare
 //   piTest_ConfirmationAnswers()      READ-ONLY: recorded YES/NO answers
 //   piTest_LastState()                READ-ONLY: last run result and pending queue
 //   piTest_PropertyInventory()        READ-ONLY: Script Properties as KEEP / JUNK / OTHER
@@ -412,4 +413,74 @@ function piTest_WRITE_ClearResolvedHeld() {
     remaining:Object.keys(store.getProperties()).length, details:cleared};
   Logger.log('PI_HELD_CLEARED=' + JSON.stringify(out));
   return out;
+}
+
+/** Email format options for unclear bookings (TEST ONLY: nothing live uses these).
+ *  A  Current: approved email, YES/NO section above "Open calendar appointment".
+ *  B  Question first: the same approved email with the YES/NO section right under "Hi <name>,".
+ *  C  Short: question and buttons first, then a one-line list of what is missing, then the link. */
+function piTest_formatOption_(record, option, test) {
+  const r = Object.assign({}, record, {piOffSharedCandidate:true, notificationFollowupNumber:0});
+  const base = tmv3_preInspectionMissingDetailEmailPreview_(r);
+  if (option === 'A') return tmv3_piAddVisitQuestion_(base, r, test);
+  const esc = tmv3_preInspectionHtmlEscape_;
+  const yes = tmv3_piConfirmLink_(r.eventId, 'YES', test), no = tmv3_piConfirmLink_(r.eventId, 'NO', test);
+  const button = function(href, label, bg) {
+    return '<a href="' + esc(href) + '" style="display:inline-block;padding:12px 28px;margin-right:12px;background:' + bg +
+      ';color:#ffffff;font-weight:700;text-decoration:none;border-radius:4px;">' + label + '</a>';
+  };
+  const buttons = '<div style="margin:12px 0 4px;">' + button(yes, 'YES', '#256b35') + button(no, 'NO', '#6b6b6b') + '</div>';
+  if (option === 'B') {
+    const marker = '</strong>,</div>';
+    const block = '<div style="margin-top:12px;padding:14px;background:#f6f5f3;border:1px solid #e2e0dc;">' +
+      '<div style="font-size:15px;font-weight:700;">First, is this appointment a pre-inspection?</div>' + buttons +
+      '<div style="font-size:12px;color:#666;">If NO, you can ignore the rest of this email.</div></div>';
+    const i = base.htmlBody.indexOf(marker);
+    return Object.assign({}, base, {htmlBody:base.htmlBody.slice(0, i + marker.length) + block + base.htmlBody.slice(i + marker.length)});
+  }
+  const a = tmv3_preInspectionMissingDetailAssessment_(r);
+  const when = Utilities.formatDate(new Date(r.start), TMV3_TIMEZONE, 'EEE MMM d · h:mm a');
+  const link = tmv3_calendarEventUrl_(r.eventId, r.calendarId || r.organizerCalendarId) || r.eventUrl || '';
+  const html = '<!doctype html><html lang="en"><body style="margin:0;padding:0;background:#f4f3f1;font-family:Arial,Helvetica,sans-serif;color:#222;">' +
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
+    '<table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;background:#ffffff;">' +
+    '<tr><td style="background:#202020;border-top:4px solid #b42b2f;padding:16px 24px;"><div style="font-size:12px;color:#aaaaaa;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '<tr><td style="padding:22px 24px 6px;"><div style="font-size:14px;">Hi <strong>' + esc(tmv3_preInspectionCreatorFirstName_(a.creatorEmail)) + '</strong>,</div>' +
+    '<div style="font-size:18px;font-weight:700;margin-top:14px;">Is this a pre-inspection?</div>' +
+    '<div style="font-size:14px;margin-top:6px;"><strong>' + esc(r.title || '(Untitled event)') + '</strong><br>' + esc(when) +
+      (r.location ? ' · ' + esc(r.location) : '') + '</div>' + buttons + '</td></tr>' +
+    '<tr><td style="padding:14px 24px 6px;"><div style="font-size:13px;color:#555;">If YES, please also fix:</div>' +
+    '<div style="font-size:13px;line-height:21px;color:#8f2024;margin-top:4px;">' +
+      a.missing.map(function(m) { return '• ' + esc(m.message); }).join('<br>') + '</div></td></tr>' +
+    '<tr><td style="padding:12px 24px 22px;"><a href="' + esc(link) + '" style="font-size:14px;">Open calendar appointment</a>' +
+    '<div style="font-size:12px;color:#888;margin-top:14px;">If NO, nothing else to do. This is an automated email.</div></td></tr>' +
+    '<tr><td style="background:#202020;padding:10px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return Object.assign({}, base, {htmlBody:html, subject:'IS THIS A PRE-INSPECTION? ' + (r.title || 'Appointment') + ' | ' + when});
+}
+
+/** TEST: sends options A, B and C for each unclear Stephen-calendar booking to Pramodh only. */
+function piTest_SendFormatOptions() {
+  const to = 'pramodh@classicfireplace.ca';
+  if (piTest_settings_().emailTo !== to) throw new Error('PI_TEST_RECIPIENT_CHANGED');
+  const saved = tmv3_piSendMissingDetailsAfterRelease_;
+  let off;
+  try {
+    tmv3_piSendMissingDetailsAfterRelease_ = function() { return {status:'SUPPRESSED_FOR_FORMAT_TEST',sent:0}; };
+    off = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12});
+  } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }
+  const records = (off.reviewRecords || []).slice(0, 2);
+  if (MailApp.getRemainingDailyQuota() < records.length * 3 + 1) throw new Error('PI_TEST_EMAIL_QUOTA_LOW');
+  const sent = [];
+  records.forEach(function(record) {
+    ['A', 'B', 'C'].forEach(function(opt) {
+      const e = piTest_formatOption_(record, opt, true);
+      const message = {to:to, subject:'TEST ' + opt + ' | ' + e.subject, body:'Format option ' + opt, htmlBody:e.htmlBody, name:'Classic Fireplace & BBQ Store'};
+      if (message.to !== to || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
+      MailApp.sendEmail(message);
+      sent.push(message.subject);
+    });
+  });
+  Logger.log('PI_TEST_FORMATS=' + JSON.stringify({to:to, count:sent.length, subjects:sent}));
+  return sent;
 }
