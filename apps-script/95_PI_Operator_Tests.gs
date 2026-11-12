@@ -112,3 +112,32 @@ function piTest_ids_() {
 function piTest_norm_(id) { return String(id || '').trim().toLowerCase().replace(/@google\.com$/, ''); }
 
 function piTest_json_(raw) { try { return raw ? JSON.parse(raw) : null; } catch (e) { return raw; } }
+
+/** READ-ONLY: who would get a missing-details email right now, and why. Sends nothing. */
+function piTest_PreviewNotices() {
+  const saved = tmv3_piSendMissingDetailsAfterRelease_;
+  const rows = [];
+  const previewOne = function(record) {
+    const a = tmv3_preInspectionMissingDetailAssessment_(record);
+    let state = null;
+    const raw = PropertiesService.getScriptProperties().getProperty('TMV3_PI_NOTIFICATION_' + tmv3_hash_(record.eventId));
+    if (raw && raw !== 'SENT') { try { state = JSON.parse(raw); } catch (e) {} }
+    const d = a.shouldNotify ? tmv3_preInspectionNotificationDecision_(record, raw === 'SENT' ? {status:'SENT',lastSentAt:new Date().toISOString()} : state) : {status:'NO_MISSING_DETAILS',send:false};
+    const blocked = !a.shouldNotify ? '' : !tmv3_normEmail_(a.creatorEmail) ? 'CREATOR_UNVERIFIED' :
+      tmv3_piCreatorEmailExcluded_(a.creatorEmail) ? 'CREATOR_EXCLUDED' : '';
+    return {title:record.title,start:record.start,creator:a.creatorEmail,onShared:!record.piOffSharedCandidate,
+      missing:a.missing.map(function(m) { return m.message; }),wouldSendNow:!!d.send && !blocked,
+      decision:blocked || d.status,eligibleAt:d.eligibleAt || ''};
+  };
+  try {
+    tmv3_piSendMissingDetailsAfterRelease_ = function(record) { rows.push(previewOne(record)); return {status:'PREVIEW_ONLY',sent:0}; };
+    const off = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12});
+    tmv3_preInspectionIntakeRecords_().forEach(function(r) {
+      if (tmv3_preInspectionMissingDetailAssessment_(r).shouldNotify) rows.push(previewOne(r));
+    });
+    const out = {status:'PREVIEW_ONLY_NO_EMAILS',offSharedChecked:off.checked,offSharedCandidates:off.candidates,
+      skippedLiveCap:off.skippedLiveCap,sourceErrors:off.sourceErrors,wouldSendNow:rows.filter(function(r) { return r.wouldSendNow; }).length,rows:rows};
+    Logger.log('PI_NOTICE_PREVIEW=' + JSON.stringify(out));
+    return out;
+  } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }
+}
