@@ -644,7 +644,7 @@ check('NEW_OFF_SHARED_REP_CALENDAR_NOTICES', () => {
   assert.equal(out.sourceErrors.length, 2, 'Jay/Karen unavailable reported');
   // SO missing is notifiable on CF Preinspects events too.
   const a = c.tmv3_preInspectionMissingDetailAssessment_(Object.assign(rec(0), {title: '12345 - Sample Customer - (416) 555-0100', rawDescription: '', descriptionClean: '', orderNumber: '', location: '1 Main St, Toronto'}));
-  assert.deepEqual(a.missing.map(m => m.code), ['SALES_ORDER']);
+  assert.deepEqual(JSON.parse(JSON.stringify(a.missing.map(m => m.code))), ['SALES_ORDER']);
   // Email template unchanged; the new row has its own 'should be' text.
   assert.equal(c.tmv3_piRendererFingerprint_(), 'b77a1a07');
   const html = c.tmv3_preInspectionComparisonRowsHtml_({title: 'x'}, {missing: [{code: 'SHARED_CALENDAR', field: 'Guests', message: 'CF Preinspects calendar not added as a guest'}]});
