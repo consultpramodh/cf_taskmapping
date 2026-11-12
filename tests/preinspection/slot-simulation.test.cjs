@@ -69,3 +69,22 @@ assert.equal(r2.count, mails.length); assert.ok(mails.length >= 1);
 mails.forEach(m => { assert.equal(m.to, 'pramodh@classicfireplace.ca'); assert.ok(!m.cc); assert.match(m.subject, /^TEST MISSING DETAILS: /); });
 assert.equal(snap(), stateBefore, 'no notification state written by test send');
 console.log('PASS: slot simulation evaluates all events, records writes/emails, writes nothing, restores state');
+
+// A busy lock at the start of the slot is retried instead of giving up the whole slot.
+{
+  const path2 = require('node:path'), h2 = require('./harness.cjs'), assert2 = require('node:assert/strict');
+  const e2 = h2.load(path2.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-12T18:00:00Z')});
+  const c2 = e2.ctx;
+  c2.tmv3_piCalendarReviewRefresh_ = () => ({status: 'PI_REVIEW_UNCHANGED'});
+  c2.tmv3_piNotifyOffSharedCandidates_ = () => ({status: 'COMPLETE', notified: 0});
+  c2.tmv3_preInspectionRefreshOperatorView_ = () => ({status: 'OK'});
+  c2.tmv3_refreshAutomationSheetsAfter_ = () => ({status: 'OK'});
+  c2.tmv3_preInspectionMaybeContinueSweep_ = () => null;
+  c2.tmv3_audit_ = () => {};
+  let calls = 0;
+  c2.tmv3_preInspectionAutomationCycle_ = () => (++calls < 3 ? {status: 'LOCK_BUSY', writes: 0} :
+    {status: 'COMPLETE', processed: 2, writes: 1, notifications: 0, results: [], sweep: {remaining: 0}});
+  const out = c2.tmv3_runPreInspectionDailySlot_('13:00');
+  assert2.equal(calls, 3); assert2.equal(out.lockRetries, 2); assert2.equal(out.writes, 1);
+  console.log('PASS: slot retries a busy lock instead of deferring the whole slot');
+}
