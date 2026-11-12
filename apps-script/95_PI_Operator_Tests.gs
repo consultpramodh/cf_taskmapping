@@ -174,7 +174,8 @@ function piTest_SendTestEmails() {
   return out;
 }
 
-/** TEST: the missing-details email WITH the YES/NO section, for every unclear Stephen-calendar booking, to Pramodh only.
+/** TEST: the missing-details email WITH the YES/NO box, for every booking on Stephen's calendar that looks like a
+ * pre-inspection but is missing CF Preinspects, to Pramodh only.
  * Clicking a TEST button records a test answer and never changes the appointment's classification. */
 function piTest_SendQuestionTest() {
   if (piTest_settings_().emailTo !== 'pramodh@classicfireplace.ca') throw new Error('PI_TEST_RECIPIENT_CHANGED');
@@ -184,7 +185,8 @@ function piTest_SendQuestionTest() {
     tmv3_piSendMissingDetailsAfterRelease_ = function() { return {status:'SUPPRESSED_FOR_QUESTION_TEST',sent:0}; };
     off = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12});
   } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }
-  const sent = (off.reviewRecords || []).map(function(record) {
+  // Same rule as live: looks like a pre-inspection, CF Preinspects not a guest, not yet answered.
+  const sent = (off.candidateRecords || []).filter(function(r) { return !tmv3_piVisitConfirmation_(r.eventId); }).map(function(record) {
     const r = Object.assign({}, record, {piOffSharedCandidate:true, notificationFollowupNumber:0});
     const q = tmv3_piAddVisitQuestion_(tmv3_preInspectionMissingDetailEmailPreview_(r), r, true);
     if (!q.questionAdded) throw new Error('PI_TEST_QUESTION_SECTION_NOT_ADDED');

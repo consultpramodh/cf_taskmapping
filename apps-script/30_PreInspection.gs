@@ -1884,7 +1884,9 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   // SENDING is written first: a crash mid-send leaves an uncertain state that is never retried.
   const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
   props.setProperty(key, JSON.stringify(next));
-  const sendable = record.piVisitQuestion === true ? tmv3_piAddVisitQuestion_(email, record, false) : email;
+  // YES/NO box only for bookings missing CF Preinspects; never on the shared calendar's own events.
+  const sendable = record.piVisitQuestion === true && record.piOffSharedCandidate === true &&
+    !tmv3_piVisitConfirmation_(record.eventId) ? tmv3_piAddVisitQuestion_(email, record, false) : email;
   MailApp.sendEmail({to:email.recipient,cc:email.cc.join(','),subject:email.subject,
     body:(decision.followupNumber ? 'FOLLOW-UP #' + decision.followupNumber + ': ' : '') +
       'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; ') +
@@ -2436,22 +2438,19 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       if (intent.status === 'REVIEW_VISIT_TYPE') {
         out.reviewNoEmail = (out.reviewNoEmail || []).concat([{eventId:record.eventId,title:record.title,reason:intent.reason}]);
         out.reviewRecords = (out.reviewRecords || []).concat([record]);
-        if (TMV3_PI_VISIT_QUESTIONS_ENABLED === true && !tmv3_preInspectionApprovalHold_(record.eventId)) {
-          // Same approved missing-details email, with the YES/NO section added.
-          let q;
-          try { q = tmv3_piSendMissingDetailsAfterRelease_(Object.assign({}, record, {piOffSharedCandidate:true,piVisitQuestion:true})); }
-          catch (e) { q = {status:'ERROR',error:String(e && e.message || e).slice(0, 160),sent:0}; }
-          out.questions = (out.questions || []).concat([Object.assign({eventId:record.eventId}, q)]);
-          out.notified += Number(q.sent || 0);
-        }
+        // Nothing reads as a pre-inspection: listed for review only, never emailed.
         return;
       }
       if (intent.status !== 'EXPLICIT_PREINSPECTION') return;
       out.candidates++;
-      const one = {eventId:record.eventId,title:record.title,source:source.calendarName,intent:intent.reason};
+      // Looks like a pre-inspection but CF Preinspects is not a guest: the email asks the booker to
+      // confirm with YES/NO, until they have answered.
+      const ask = TMV3_PI_VISIT_QUESTIONS_ENABLED === true && !answered;
+      const one = {eventId:record.eventId,title:record.title,source:source.calendarName,intent:intent.reason,visitQuestion:ask};
+      out.candidateRecords = (out.candidateRecords || []).concat([record]);
       try {
         if (tmv3_preInspectionApprovalHold_(record.eventId)) one.notification = {status:'OPERATOR_APPROVAL_HOLD_NO_SEND',sent:0};
-        else one.notification = tmv3_piSendMissingDetailsAfterRelease_(Object.assign({}, record, {piOffSharedCandidate:true}));
+        else one.notification = tmv3_piSendMissingDetailsAfterRelease_(Object.assign({}, record, {piOffSharedCandidate:true,piVisitQuestion:ask}));
       } catch (e) { one.notification = {status:'ERROR',error:String(e && e.message || e).slice(0, 200),sent:0}; }
       out.notified += Number(one.notification.sent || 0);
       out.events.push(one);

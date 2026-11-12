@@ -50,3 +50,26 @@ assert.match(page.html, /^<div[\s\S]*Thank you\. Recorded: YES, this is a pre-in
 const v = c.tmv3_piVisitConfirmation_(record.eventId);
 assert.equal(v.answer, 'YES'); assert.equal(v.by, 'edward@classicfireplace.ca');
 console.log('PASS: signed YES/NO links, test answers isolated, tamper rejected, live answer recorded with who/when');
+
+// Dynamic rule: the YES/NO box appears only for a booking missing CF Preinspects (off-shared),
+// only until it is answered, and never for events already on the shared calendar.
+{
+  const mails = [];
+  c.MailApp = {getRemainingDailyQuota: () => 100, sendEmail: m => mails.push(m)};
+  c.tmv3_preInspectionApprovalHold_ = () => null;
+  c.tmv3_preInspectionNotificationDecision_ = () => ({send: true, followupNumber: 0, status: 'SEND'});
+  const fresh = Object.assign({}, record, {eventId: 'z9offshared1@google.com'});
+  const send = r => { mails.length = 0; Object.keys(env.props.store).filter(k => /NOTIFICATION/.test(k)).forEach(k => env.props.deleteProperty(k));
+    const res = c.tmv3_piSendMissingDetailsAfterRelease_(r); return {res, html: (mails[0] || {}).htmlBody || ''}; };
+  let o = send(Object.assign({}, fresh, {piOffSharedCandidate: true, piVisitQuestion: true}));
+  assert.equal(o.res.status, 'SENT', JSON.stringify(o.res));
+  assert.match(o.html, /First, is this appointment a pre-inspection\?/, 'off-shared + looks like PI: box shown');
+  o = send(Object.assign({}, fresh, {piVisitQuestion: true}));
+  assert.doesNotMatch(o.html, /First, is this appointment/, 'on the shared calendar: never a box');
+  o = send(Object.assign({}, fresh, {piOffSharedCandidate: true, piVisitQuestion: false}));
+  assert.doesNotMatch(o.html, /First, is this appointment/, 'questions switched off: no box');
+  env.props.setProperty(c.tmv3_piConfirmKey_(fresh.eventId, false), '{"answer":"YES","by":"edward@classicfireplace.ca"}');
+  o = send(Object.assign({}, fresh, {piOffSharedCandidate: true, piVisitQuestion: true}));
+  assert.doesNotMatch(o.html, /First, is this appointment/, 'already answered: no box');
+  console.log('PASS: YES/NO box only for off-shared look-alike pre-inspections, until answered');
+}
