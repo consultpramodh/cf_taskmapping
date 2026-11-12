@@ -15109,6 +15109,15 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
     }
   });
 
+  if (eventRecord.vertical === 'PreInspection') {
+    // Edit the organizer's copy first: Google propagates organizer edits to guest
+    // copies, while guest-copy description edits may not persist.
+    const organizerId = tmv3_clean_(eventRecord.organizerCalendarId).toLowerCase();
+    copies.sort(function(a, b) {
+      return (String(b.calendarId).toLowerCase() === organizerId) - (String(a.calendarId).toLowerCase() === organizerId);
+    });
+  }
+
   const missing = tmv3_titleMissingRequiredCalendarIds_(ids, copies);
   if (missing.length) {
     throw new Error(
@@ -15141,7 +15150,9 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
       authoritativeCopy.beforeDescription,
       { preserveOldTitle:!recordedLegacy }
     );
-    const savedLegacy = recordedLegacy || (authoritativeCopy.beforeTitle !== desired ? authoritativeCopy.beforeTitle : '');
+    const staleCopy = copies.filter(function(copy) { return tmv3_clean_(copy.beforeTitle) !== desired; })[0];
+    const savedLegacy = recordedLegacy || (authoritativeCopy.beforeTitle !== desired ? authoritativeCopy.beforeTitle : '') ||
+      (staleCopy ? staleCopy.beforeTitle : '');
     authoritativePreInspectionPlan.after = tmv3_preInspectionEnsureLegacyTitle_(
       authoritativePreInspectionPlan.after, savedLegacy
     );
@@ -15189,8 +15200,23 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
 
   const results = [];
 
-  copies.forEach(function(copy) {
+  copies.forEach(function(copy, index) {
     const plan = copy.plan;
+
+    if (eventRecord.vertical === 'PreInspection' && index > 0 && (plan.descriptionChange || plan.titleChange)) {
+      // Google copies the organizer's edit to guest copies after a few seconds.
+      for (let attempt = 0; attempt < 5 && !copy.propagatedFromOrganizer; attempt++) {
+        if (attempt) Utilities.sleep(2000);
+        const propagated = tmv3_findEventCopyRobust_(copy.calendarId, contract.eventId);
+        if (propagated && propagated.event &&
+            String(propagated.event.getDescription() || '') === plan.after &&
+            tmv3_clean_(propagated.event.getTitle()) === desired) {
+          plan.descriptionChange = false;
+          plan.titleChange = false;
+          copy.propagatedFromOrganizer = true;
+        }
+      }
+    }
 
     if (plan.descriptionChange) {
       copy.event.setDescription(plan.after);
@@ -15245,6 +15271,7 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
     results.push({
       calendarId:copy.calendarId,
       status:
+        copy.propagatedFromOrganizer ? 'PROPAGATED_FROM_ORGANIZER_VERIFIED' :
         !plan.titleChange && !plan.descriptionChange
           ? 'ALREADY_CORRECT'
           : 'WRITTEN_AND_VERIFIED',
@@ -16093,6 +16120,15 @@ function tmv3_buildCreateSource_(bundle, action) {
 
 
 
+
+// Status notes (last result, last refresh, last error) are logs, not settings: they live in
+// CacheService for 6 hours. The TM Audit sheet keeps the permanent record.
+function tmv3_statusNotePut_(key, value) {
+  try { CacheService.getScriptCache().put(key, String(value || ''), 21600); } catch (ignored) {}
+}
+function tmv3_statusNoteGet_(key) {
+  try { return CacheService.getScriptCache().get(key) || null; } catch (ignored) { return null; }
+}
 
 function tmv3_durableWriteGuardKey_(kind, identity) {
   return (
@@ -19775,7 +19811,12 @@ function tmv3_serviceDeliveryOrderBackfill() {
 }
 
 
+// The Oct 20 2026 one-time Service/Delivery Sales Order backlog is retired, so it no
+// longer runs each slot or needs its 81 TMV3_SD_ORDER_BACKFILL_20261020_* Script Properties.
+var TMV3_SD_ORDER_BACKFILL_RETIRED = true;
+
 function tmv3_serviceDeliveryOrderBackfill_(props) {
+  if (TMV3_SD_ORDER_BACKFILL_RETIRED) return null;
   const ids = [18374,18471,18733,18735,18754,18774,18801,18806,18831,18896,18897,18908,18913,18914,18979,19037,19064,19098,19109,19126,19137,19190,19195,19198,19201,19203,19204,19205,19214,19218,19221,19222,19223,19224,19225,19226,19227,19228,19229,19230,19231,19232,19233,19234,19235,19240,19241,19242,19248,19249,19250,19251,19252,19253,19255,19256,19257,19258,19259,19260,19261,19262,19263,19264,19265,19266,19267,19268,19269,19270,19272,19273,19274,19275,19276,19279,19280,19281,19282,19283,19284];
   const prefix = 'TMV3_SD_ORDER_BACKFILL_20261020_';
   const handler = 'tmv3_serviceDeliveryOrderBackfill';
@@ -20206,7 +20247,8 @@ function tmv3_verticalProductionCycle_(vertical, options) {
             executions.push({taskId:execution.taskId||plan.taskId,status:execution.status,actions:plan.actions,readbackVerified:true});
           }finally{delete tmv3_verticalProductionCycle_.context;}
         }
-        props.setProperty(key,JSON.stringify({state:'VERIFIED',at:Date.now(),fingerprint:record.fingerprint,taskIds:executions.map(function(x){return x.taskId;})}));
+        // Verified: nothing left to hold. The TM Audit sheet keeps the history.
+        props.deleteProperty(key);
         result.status='VERIFIED_CONVERGENCE';result.transactionsVerified=Number(result.transactionsVerified||0)+1;result.writes+=noTaskActions?0:1;result.results.push({eventId:id,status:'VERIFIED_CONVERGENCE',executions:executions});
         tmv3_audit_(vertical,id,'','VERTICAL_AUTO','PASS',JSON.stringify(result.results[result.results.length-1]));
       } catch(err) {
@@ -20231,7 +20273,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     return result;
   } finally {
     delete tmv3_verticalProductionCycle_.context;
-    PropertiesService.getScriptProperties().setProperty('TMV3_VERTICAL_RESULT_'+vertical,JSON.stringify(Object.assign({},result,{results:result.results.slice(-8)})));
+    tmv3_statusNotePut_('TMV3_VERTICAL_RESULT_'+vertical,JSON.stringify(Object.assign({},result,{results:result.results.slice(-8)})));
     lock.releaseLock();
   }
 }
@@ -20263,7 +20305,7 @@ function tmv3_fourVerticalAutomationStatus() {
   const props=PropertiesService.getScriptProperties(),policy=TMV3.OPERATIONS;
   const verticals={PreInspection:{enabled:tmv3_operationWritesEnabled_('PREINSPECTIONAUTO'),hours:[8,13,17]}};
   ['Service','Delivery','Install'].forEach(function(v){
-    let recent=null;try{recent=JSON.parse(props.getProperty('TMV3_VERTICAL_RESULT_'+v)||'null');}catch(ignored){}
+    let recent=null;try{recent=JSON.parse(tmv3_statusNoteGet_('TMV3_VERTICAL_RESULT_'+v)||'null');}catch(ignored){}
     verticals[v]={enabled:TMV3.MODE==='PRODUCTION_WRITE' && policy.verticalProductionEnabled===true &&
       (policy.verticalProductionVerticals||[]).indexOf(v)>=0,requiredSalesOrderStatus:v==='Service'?'In Progress':'Approved',recent:recent};
   });
@@ -20318,12 +20360,12 @@ function tmv3_refreshAutomationSheets() {
       completedAt:new Date().toISOString(),timezone:TMV3_TIMEZONE,rows:counts,
       projectionVerified:true,timestampReadbackVerified:true,sourceMode:'CURRENT_CALENDAR_AND_LOCAL_STRIVEN_CACHE',
       strivenWrites:0,calendarWrites:0,morningOps:morning};
-    props.setProperty('TMV3_SHEET_REFRESH_LAST_SUCCESS',JSON.stringify(result));
-    props.deleteProperty('TMV3_SHEET_REFRESH_PENDING');props.deleteProperty('TMV3_SHEET_REFRESH_LAST_ERROR');
+    tmv3_statusNotePut_('TMV3_SHEET_REFRESH_LAST_SUCCESS',JSON.stringify(result));
+    props.deleteProperty('TMV3_SHEET_REFRESH_PENDING');tmv3_statusNotePut_('TMV3_SHEET_REFRESH_LAST_ERROR','');
     tmv3_audit_('SYSTEM','','','AUTOMATIC_SHEET_REFRESH','PASS',JSON.stringify(result));
     Logger.log(JSON.stringify(result));return result;
   } catch(err) {
-    props.setProperty('TMV3_SHEET_REFRESH_LAST_ERROR',JSON.stringify({at:new Date().toISOString(),error:String(err && err.message || err)}));
+    tmv3_statusNotePut_('TMV3_SHEET_REFRESH_LAST_ERROR',JSON.stringify({at:new Date().toISOString(),error:String(err && err.message || err)}));
     tmv3_audit_('SYSTEM','','','AUTOMATIC_SHEET_REFRESH','ATTENTION',String(err && err.message || err));
     throw err;
   } finally {lock.releaseLock();}
@@ -20332,7 +20374,7 @@ function tmv3_refreshAutomationSheets() {
 
 function tmv3_automationSheetRefreshStatus() {
   const p=PropertiesService.getScriptProperties();
-  function json(key){const value=p.getProperty(key);return value?JSON.parse(value):null;}
+  function json(key){const value=tmv3_statusNoteGet_(key);return value?JSON.parse(value):null;}
   return {version:TMV3.VERSION,lastSuccess:json('TMV3_SHEET_REFRESH_LAST_SUCCESS'),
     lastError:json('TMV3_SHEET_REFRESH_LAST_ERROR'),pending:p.getProperty('TMV3_SHEET_REFRESH_PENDING')==='true',
     triggers:tmv3_listTriggers()};
@@ -20394,7 +20436,7 @@ function tmv3_fullVerticalSweepStatus() {
   const p=PropertiesService.getScriptProperties(),out={version:TMV3.VERSION,budget:tmv3_strivenApiBudgetStatus_(),verticals:{},triggers:tmv3_listTriggers()};
   ['Install','Delivery','Service'].forEach(function(v){
     const state=JSON.parse(p.getProperty('TMV3_VERTICAL_SWEEP_'+v)||'null');
-    const recent=JSON.parse(p.getProperty('TMV3_VERTICAL_RESULT_'+v)||'null');
+    const recent=JSON.parse(tmv3_statusNoteGet_('TMV3_VERTICAL_RESULT_'+v)||'null');
     out.verticals[v]={sweep:state,recent:recent};
   });return out;
 }

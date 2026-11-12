@@ -300,7 +300,7 @@ function tmv3_installStandardDailyTriggers() {
     triggers.filter(function(t){return t.handler==='tmv3_scheduledSheetRefresh';}).length!==3 ||
     triggers.some(function(t){return obsolete.indexOf(t.handler)>=0 && t.handler!=='tmv3_scheduledSheetRefresh';}))throw Error('STANDARD_SCHEDULE_READBACK_FAILED');
   const result={status:'STANDARD_DAILY_TRIGGERS_VERIFIED',schedule:schedule,triggers:triggers,businessTriggerCount:12,maintenanceTriggerCount:3};
-  PropertiesService.getScriptProperties().setProperty('TMV3_STANDARD_SCHEDULE',JSON.stringify(result));
+  tmv3_statusNotePut_('TMV3_STANDARD_SCHEDULE',JSON.stringify(result));
   return result;
 }
 
@@ -364,7 +364,7 @@ function tmv3_installRefreshView_(reason) {
   const count=tmv3_rows_(cfg.sheet).filter(function(r){return !!tmv3_clean_(r['Event ID']);}).length;
   if(count!==decisions.length)throw Error('INSTALL_VIEW_ROW_READBACK_FAILED');
   const result={status:'INSTALL_VIEW_REFRESHED',at:new Date().toISOString(),reason:reason,rows:count,strivenWrites:0,calendarWrites:0};
-  PropertiesService.getScriptProperties().setProperty('TMV3_INSTALL_VIEW_LAST_SUCCESS',JSON.stringify(result));return result;
+  tmv3_statusNotePut_('TMV3_INSTALL_VIEW_LAST_SUCCESS',JSON.stringify(result));return result;
 }
 
 // Original: 60_Automation; Function: tmv3_installSchedulePublication_
