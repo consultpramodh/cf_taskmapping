@@ -1,6 +1,14 @@
 # Pre-Inspection rebuild status
 
-## r7 — released 2026-11-11 (automation on, creator emails off)
+## 2026-11-12 — end-to-end check 19 PASS / 3 WARN / 0 FAIL
+
+`piTest_EndToEndCheck` (read-only) on the live project: current 10/30/40 code, approved template fingerprint b77a1a07, automation and creator emails on, triggers 08:00/13:00/17:00 for all four workflows plus 3 sheet refreshes, 7 calendars readable, YES/NO web app deployed and a test click recorded, Striven credentials present, 36 Script Properties. Slot dry run: 1 Task to create (Stacy Wickman), 6 missing-details emails due, 4 links-only, 4 for manual review (Perry Wildfong, Angela Tivoli, BKDP Michele & Blaine, Andi Wheelband).
+
+WARN: YES/NO box off by choice; three obsolete no-op triggers (`tmv3_serviceSweepContinue`, `tmv3_installSweepContinue`, `tmv3_preInspectionContinueEligibleSweep`), removed by running `tmv3_installStandardDailyTriggers`; one test answer in Script Properties.
+
+Changes today: YES/NO box in the missing-details email (off), Steve + Colleen paired, grace-period fix, Script Properties cleanup (784 → 33), status logs to cache, Oct 20 backfill retired, operator tools trimmed (95_PI_Operator_Tests.gs, no top-level declarations).
+
+## r7 — released 2026-11-11 (automation on; creator emails turned on 2026-11-12)
 
 After the targeted Terry (#19801) and Jakob (#19802) runs created Tasks and verified clickable links on both Calendar copies, the release gate was turned on for all eligible events. Creator missing-details emails remain off (`TMV3_PI_CREATOR_EMAILS_ENABLED = false`). A plan whose only remaining action is link re-verification now counts as converged.
 
