@@ -2536,27 +2536,26 @@ function tmv3_piRecordConfirmationInReview_(eventId, value) {
   }
 }
 
-/** Adds the "Is this a pre-inspection?" YES/NO section to the approved missing-details email,
- * just above "Open calendar appointment". The approved template itself is not changed; if its
- * closing section ever moves, the email is sent without buttons rather than altered. */
+/** Adds the "Is this a pre-inspection?" YES/NO box to the approved missing-details email, right
+ * under "Hi <name>," (layout B, chosen Nov 12 2026). The approved template itself is not changed;
+ * if its greeting line ever moves, the email is sent without buttons rather than altered. */
 function tmv3_piAddVisitQuestion_(email, record, test) {
-  const marker = '<tr><td style="padding:0 24px 22px;">';
-  if (!email || String(email.htmlBody || '').indexOf(marker) < 0) return Object.assign({}, email, {questionAdded:false});
+  const marker = '</strong>,</div>';
+  const html = String(email && email.htmlBody || '');
+  const at = html.indexOf(marker);
+  if (at < 0) return Object.assign({}, email, {questionAdded:false});
   const esc = tmv3_preInspectionHtmlEscape_;
   const yes = tmv3_piConfirmLink_(record.eventId, 'YES', test), no = tmv3_piConfirmLink_(record.eventId, 'NO', test);
   const button = function(href, label, bg) {
     return '<a href="' + esc(href) + '" style="display:inline-block;padding:12px 28px;margin-right:12px;background:' + bg +
       ';color:#ffffff;font-weight:700;text-decoration:none;border-radius:4px;">' + label + '</a>';
   };
-  const section = '<tr><td style="padding:0 24px 18px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" ' +
-    'style="background:#f6f5f3;border:1px solid #e2e0dc;"><tr><td style="padding:14px;">' +
-    '<div style="font-size:15px;font-weight:700;">Is this appointment a pre-inspection?</div>' +
-    '<div style="font-size:13px;color:#555;margin-top:4px;">We could not tell from the details. Please answer so we know whether to follow up.</div>' +
+  const box = '<div style="margin-top:12px;padding:14px;background:#f6f5f3;border:1px solid #e2e0dc;">' +
+    '<div style="font-size:15px;font-weight:700;">First, is this appointment a pre-inspection?</div>' +
     '<div style="margin:12px 0 4px;">' + button(yes, 'YES', '#256b35') + button(no, 'NO', '#6b6b6b') + '</div>' +
-    '<div style="font-size:12px;color:#666;">If NO, you can ignore the rest of this email; we will not ask again.</div>' +
-    '</td></tr></table></td></tr>';
-  const html = String(email.htmlBody).replace(marker, section + marker);
-  return Object.assign({}, email, {htmlBody:html, questionAdded:true,
+    '<div style="font-size:12px;color:#666;">If NO, you can ignore the rest of this email.</div></div>';
+  const cut = at + marker.length;
+  return Object.assign({}, email, {htmlBody:html.slice(0, cut) + box + html.slice(cut), questionAdded:true,
     bodySuffix:' | Is this a pre-inspection? YES: ' + yes + '  NO: ' + no});
 }
 

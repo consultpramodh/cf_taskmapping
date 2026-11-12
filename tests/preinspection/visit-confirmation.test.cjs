@@ -21,9 +21,11 @@ assert.equal(q.recipient, 'edward@classicfireplace.ca');
 assert.equal(q.subject, base.subject, 'approved subject unchanged');
 assert.match(q.subject, /MISSING DETAILS/);
 // Approved template is intact: removing the added section gives back the original email exactly.
-const added = q.htmlBody.match(/<tr><td style="padding:0 24px 18px;">[\s\S]*?will not ask again\.<\/div><\/td><\/tr><\/table><\/td><\/tr>/)[0];
+const added = q.htmlBody.match(/<div style="margin-top:12px;padding:14px;[\s\S]*?ignore the rest of this email\.<\/div><\/div>/)[0];
 assert.equal(q.htmlBody.replace(added, ''), base.htmlBody);
-assert.ok(q.htmlBody.indexOf('Is this appointment a pre-inspection?') < q.htmlBody.indexOf('Open calendar appointment'));
+// Layout B: the question comes straight after "Hi <name>," and before the appointment details.
+assert.ok(q.htmlBody.indexOf('Hi <strong>') < q.htmlBody.indexOf('First, is this appointment a pre-inspection?'));
+assert.ok(q.htmlBody.indexOf('First, is this appointment a pre-inspection?') < q.htmlBody.indexOf('Appointment requiring attention'));
 const [yesT, noT] = links(added);
 assert.equal(params(yesT).a, 'YES'); assert.equal(params(yesT).t, '1'); assert.equal(params(noT).a, 'NO');
 globalThis.__HARNESS_USER__ = 'pramodh@classicfireplace.ca';
@@ -40,7 +42,7 @@ assert.equal(audits.length, 0);
 
 // LIVE link records who answered and flips classification.
 const live = c.tmv3_piAddVisitQuestion_(base, record, false);
-const [yesL] = links(live.htmlBody.match(/Is this appointment a pre-inspection\?[\s\S]*?will not ask again/)[0]);
+const [yesL] = links(live.htmlBody.match(/First, is this appointment a pre-inspection\?[\s\S]*?ignore the rest/)[0]);
 assert.equal(params(yesL).t, undefined);
 globalThis.__HARNESS_USER__ = 'edward@classicfireplace.ca';
 page = c.doGet({parameter: params(yesL)});
