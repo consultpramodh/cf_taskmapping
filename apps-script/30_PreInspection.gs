@@ -2121,7 +2121,7 @@ function tmv3_piProcessCycleEvent_(cycle, record, one) {
   } catch (err) {
     const message = String(err && err.message || err);
     const closed = tmv3_piClosedTaskStatus_(message, one.taskId);
-    if (closed && tmv3_taskIsCompleted_(closed)) {
+    if (closed && /^(?:done|complete|completed|closed)$/.test(tmv3_norm_(closed))) {
       // The inspector finished the visit: expected outcome, not a failure. No alert.
       one.status = 'TASK_COMPLETED_NO_ACTION'; one.taskStatus = closed;
       tmv3_piPendingRemove_(cycle, record.eventId);
