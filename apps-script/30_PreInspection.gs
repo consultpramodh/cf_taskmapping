@@ -38,12 +38,27 @@ var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
 // "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
 // question email is approved (send a TEST first with piTest_SendQuestionTest).
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
+// Short-lived caches live in CacheService (auto-expiring, not visible in Script Properties).
+var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = true;
 
 const TMV3_PI_REVISION = '2026-11-11-r7';
 
 // =====================================================================
 // §1 RELEASE GATE, LOCKED STANDARD AND POLICY
 // =====================================================================
+
+/** Store for short-lived state: CacheService (auto-expires) unless switched back to Script Properties. */
+function tmv3_piEphemeral_() {
+  if (TMV3_PI_EPHEMERAL_STATE_IN_CACHE === true) {
+    const cache = CacheService.getScriptCache();
+    return {get:function(k) { return cache.get(k); },
+      set:function(k, v, seconds) { cache.put(k, String(v), Math.max(60, Math.min(21600, Number(seconds || 21600)))); },
+      del:function(k) { cache.remove(k); }};
+  }
+  const props = PropertiesService.getScriptProperties();
+  return {get:function(k) { return props.getProperty(k); }, set:function(k, v) { props.setProperty(k, String(v)); },
+    del:function(k) { props.deleteProperty(k); }};
+}
 
 /** Standard disabled result for operator/automation entry points. */
 function tmv3_piStagingDisabled_() {
@@ -1930,11 +1945,11 @@ function tmv3_preInspectionFailureAlert_(eventId, error) {
   if (TMV3.MODE !== 'PRODUCTION_WRITE' || TMV3.OPERATIONS.preInspectionFailureAlertsEnabled !== true) return {status:'ALERT_GATED'};
   const day = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
   const key = 'TMV3_PI_FAILURE_' + tmv3_hash_(day + '|' + eventId + '|' + error);
-  const props = PropertiesService.getScriptProperties();
-  if (props.getProperty(key)) return {status:'ALREADY_ALERTED'};
+  const props = tmv3_piEphemeral_();
+  if (props.get(key)) return {status:'ALREADY_ALERTED'};
   try {
     if (MailApp.getRemainingDailyQuota() < 1) return {status:'QUOTA_DEFERRED'};
-    props.setProperty(key, 'SENDING');
+    props.set(key, 'SENDING', 21600);
     const esc = tmv3_preInspectionHtmlEscape_;
     const ev = tmv3_piAlertEvent_(eventId);
     const why = tmv3_piAlertExplain_(error);
@@ -1954,7 +1969,7 @@ function tmv3_preInspectionFailureAlert_(eventId, error) {
         '<p>Nothing was changed for this appointment.' + (links ? '<br>' + links : '') + '</p>' +
         '<p style="color:#888;font-size:11px;">Technical detail: ' + esc(error) + (eventId ? ' (event ' + esc(eventId) + ')' : '') + '</p>',
       name:'Classic Fireplace & BBQ Store'});
-    props.setProperty(key, 'SENT');
+    props.set(key, 'SENT', 21600);
     return {status:'SENT'};
   } catch (err) {
     tmv3_audit_('PreInspection', eventId, '', 'PREINSPECTION_FAILURE_ALERT', 'ATTENTION', String(err));
@@ -2095,9 +2110,7 @@ function tmv3_piReconcileAuthoritativeEvent_(cycle, record, one, doneKey) {
       one.status = 'FULFILLED_NO_RECREATE'; one.historicalEvidence = one.blocker; one.blocker = '';
     }
     tmv3_piPendingRemove_(cycle, record.eventId);
-    const inferredKey = 'TMV3_PI_INFERRED_' + tmv3_hash_(record.eventId);
-    if (cycle.props.getProperty(inferredKey)) cycle.props.deleteProperty(inferredKey);
-    cycle.props.setProperty(doneKey, JSON.stringify({fingerprint:fresh.fingerprint,at:Date.now()}));
+    tmv3_piEphemeral_().set(doneKey, JSON.stringify({fingerprint:fresh.fingerprint,at:Date.now()}), 3600);
   } else {
     one.status = 'ATTENTION';
     result.status = 'ATTENTION';
@@ -2116,7 +2129,7 @@ function tmv3_piProcessCycleEvent_(cycle, record, one) {
       return 'PUSH';
     }
     const doneKey = 'TMV3_PI_DONE_' + tmv3_hash_(record.eventId);
-    const done = JSON.parse(cycle.props.getProperty(doneKey) || 'null');
+    const done = JSON.parse(tmv3_piEphemeral_().get(doneKey) || 'null');
     if (!cycle.options.eventId && done && done.fingerprint === record.fingerprint && cycle.now - Number(done.at || 0) < 3600000) {
       one.status = 'VERIFIED_UNCHANGED_CACHE';
       return 'PUSH';
@@ -2184,7 +2197,7 @@ function tmv3_piPersistCycle_(cycle, selected, cursor) {
     props.setProperty('TMV3_PI_CURSOR', String((cursor + result.processed) % selected.length));
   }
   props.setProperty('TMV3_PI_PENDING_EVENTS', JSON.stringify(cycle.pending));
-  props.setProperty('TMV3_PI_LAST_RESULT', JSON.stringify({status:result.status,
+  tmv3_piEphemeral_().set('TMV3_PI_LAST_RESULT', JSON.stringify({status:result.status,
     processed:result.processed,writes:result.writes,notifications:result.notifications,
     events:result.results.map(function(x) {
       return {eventId:x.eventId,status:x.status || x.plan || x.intake,taskId:x.taskId,error:String(x.error || '').slice(0, 500)};
@@ -2205,12 +2218,12 @@ function tmv3_piCycleBody_(cycle) {
     result.status = 'API_BUDGET_WAIT'; result.apiBudget = budget;
     result.resume = 'NEXT_SCHEDULED_SLOT_AFTER_DAILY_RESET';
     const pauseKey = 'TMV3_PI_BUDGET_PAUSE_DATE';
-    if (props.getProperty(pauseKey) !== budget.date) {
-      props.setProperty(pauseKey, budget.date);
+    if (tmv3_piEphemeral_().get(pauseKey) !== budget.date) {
+      tmv3_piEphemeral_().set(pauseKey, budget.date);
       tmv3_audit_('PreInspection', '', '', 'PREINSPECTION_API_BUDGET_WAIT', 'WAIT', JSON.stringify({date:budget.date,
         count:budget.count,softLimit:budget.softLimit,resume:result.resume,triggers:tmv3_listTriggers()}));
     }
-    props.setProperty('TMV3_PI_LAST_RESULT', JSON.stringify(result));
+    tmv3_piEphemeral_().set('TMV3_PI_LAST_RESULT', JSON.stringify(result));
     return result;
   }
 
@@ -2360,11 +2373,12 @@ function tmv3_piRepBookedIntent_(record, cfg) {
 /** Cached PreInspection-intent decision per event+fingerprint (live order reads cost API calls). */
 function tmv3_piOffSharedIntent_(record, props) {
   const key = 'TMV3_PI_OFFSHARED_INTENT_' + tmv3_hash_(record.eventId + '|' + record.fingerprint);
-  const cached = props.getProperty(key);
+  const store = tmv3_piEphemeral_();
+  const cached = store.get(key);
   if (cached) { try { return JSON.parse(cached); } catch (e) {} }
   const d = tmv3_preInspectionClassifyLikely_(record, TMV3.VERTICALS.PreInspection, true);
   const out = {status:d.status,reason:d.reason};
-  if (!/FAILED/.test(String(d.reason || ''))) props.setProperty(key, JSON.stringify(out));
+  if (!/FAILED/.test(String(d.reason || ''))) store.set(key, JSON.stringify(out));
   return out;
 }
 
@@ -2672,7 +2686,7 @@ function tmv3_runPreInspectionDailySlot_(slot) {
   result.batchStatuses = batchStatuses;
   result.processed = totals.processed; result.writes = totals.writes;
   result.notifications = totals.notifications; result.results = totals.results;
-  if (result.status === 'LOCK_BUSY') PropertiesService.getScriptProperties().setProperty('TMV3_PI_RETRY_SWEEP_START', '1');
+  if (result.status === 'LOCK_BUSY' && TMV3_PI_EPHEMERAL_STATE_IN_CACHE !== true) PropertiesService.getScriptProperties().setProperty('TMV3_PI_RETRY_SWEEP_START', '1');
   tmv3_preInspectionMaybeContinueSweep_(result);
   if (result.sweep && result.sweep.remaining > 0 && result.status === 'COMPLETE') result.status = 'IN_PROGRESS';
   if (result.sweep && result.sweep.remaining === 0 && result.sweep.pendingReview > 0 && result.status === 'COMPLETE')
@@ -2771,7 +2785,7 @@ function tmv3_reconcilePreInspectionPendingReview() {
     const result = {status:pending.length ? 'REVIEW_REMAINS' : 'COMPLETE',
       before:stored.length,remaining:pending.length,cleared:stored.length - pending.length,
       results:results,businessWrites:0};
-    props.setProperty('TMV3_PI_LAST_PENDING_RECONCILIATION', JSON.stringify(result));
+    tmv3_piEphemeral_().set('TMV3_PI_LAST_PENDING_RECONCILIATION', JSON.stringify(result));
     tmv3_audit_('PreInspection', '', '', 'PENDING_HISTORY_RECONCILE', result.status, JSON.stringify(result));
     Logger.log(JSON.stringify(result));
     return result;
@@ -2822,7 +2836,7 @@ function tmv3_verifyPreInspectionAutomation(eventId) {
     let offset = 0;
     if (!target) {
       let state = null;
-      try { state = JSON.parse(props.getProperty(cursorKey) || 'null'); } catch (ignored) {}
+      try { state = JSON.parse(tmv3_piEphemeral_().get(cursorKey) || 'null'); } catch (ignored) {}
       if (state && state.fingerprint === fingerprint && Number.isInteger(state.offset) &&
           state.offset >= 0 && state.offset < queue.length) offset = state.offset;
     }
@@ -2849,8 +2863,8 @@ function tmv3_verifyPreInspectionAutomation(eventId) {
       diagnosticCursorPropertyOnly:!target
     };
     if (!target) {
-      if (hasMore) props.setProperty(cursorKey, JSON.stringify({fingerprint:fingerprint,offset:offset + batch.length}));
-      else props.deleteProperty(cursorKey);
+      if (hasMore) tmv3_piEphemeral_().set(cursorKey, JSON.stringify({fingerprint:fingerprint,offset:offset + batch.length}));
+      else tmv3_piEphemeral_().del(cursorKey);
     }
     Logger.log('PI_VERIFICATION_BATCH=' + JSON.stringify(result));
     return result;

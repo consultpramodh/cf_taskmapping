@@ -82,7 +82,7 @@ function createServices(log) {
     SpreadsheetApp: {openById() { record('SHEET_OPEN'); throw new Error('SHEETS_BLOCKED_IN_HARNESS'); }, flush() {}},
     UrlFetchApp: {fetch() { record('HTTP'); throw new Error('NETWORK_BLOCKED_IN_HARNESS'); }},
     Session: {getActiveUser: () => ({getEmail: () => (globalThis.__HARNESS_USER__ || 'harness@example.invalid')}), getScriptTimeZone: () => 'America/Toronto'},
-    CacheService: {getScriptCache: () => ({get: () => null, put() {}, remove() {}})},
+    CacheService: (() => { const c = {}; return {getScriptCache: () => ({get: k => (k in c ? c[k] : null), put(k, v) { c[k] = String(v); }, remove(k) { delete c[k]; }})}; })(),
     HtmlService: {createHtmlOutput: html => ({html: String(html), setTitle() { return this; }})}, ContentService: {}
   };
 }

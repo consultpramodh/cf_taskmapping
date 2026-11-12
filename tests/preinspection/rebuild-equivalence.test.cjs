@@ -24,7 +24,8 @@ function check(name, fn) {
   try { fn(); } catch (e) { failures.push(name + ': ' + String(e && e.message || e).slice(0, 600)); }
 }
 const BASELINE_RULES = t => t.replace(/^var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;/m, 'var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = false;')
-  .replace(/^var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;/m, 'var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = false;');
+  .replace(/^var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;/m, 'var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = false;')
+  .replace(/^var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = true;/m, 'var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = false;');
 const CLOSE = (f, t) => f === '30_PreInspection.gs' ? BASELINE_RULES(t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;')) : t;
 function load(source, opts) {
   opts = Object.assign({transform: CLOSE}, opts || {});

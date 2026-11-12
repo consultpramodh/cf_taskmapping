@@ -127,7 +127,7 @@ function piTest_Plans() {
 
 function piTest_LastState() {
   const props = PropertiesService.getScriptProperties();
-  const out = {lastResult:piTest_json_(props.getProperty('TMV3_PI_LAST_RESULT')),
+  const out = {lastResult:piTest_json_(tmv3_piEphemeral_().get('TMV3_PI_LAST_RESULT') || props.getProperty('TMV3_PI_LAST_RESULT')),
     pending:piTest_json_(props.getProperty('TMV3_PI_PENDING_EVENTS')),
     releaseGateInCode:TMV3_PI_CLEANED_RELEASE_APPROVED};
   Logger.log('PI_TEST_LAST_STATE=' + JSON.stringify(out));
@@ -284,5 +284,64 @@ function piTest_ConfirmationAnswers() {
     .map(function(k) { return Object.assign({kind:k.indexOf('_TEST_') > 0 ? 'TEST' : 'LIVE'}, piTest_json_(props[k])); });
   Logger.log('PI_CONFIRM_ANSWERS=' + JSON.stringify(rows));
   return rows;
+}
+
+/** Classify a Script Property key: KEEP (needed state), JUNK (safe to delete) or OTHER (not PreInspection: never touched). */
+function piTest_propertyClass_(key, value, todayIso) {
+  const json = piTest_json_(value);
+  const junkExact = ['TMV3_PI_LAST_RESULT','TMV3_PI_BUDGET_PAUSE_DATE','TMV3_PI_RETRY_SWEEP_START','TMV3_PI_DISCOVERY',
+    'TMV3_PI_LAST_PENDING_RECONCILIATION','TMV3_PI_VERIFY_CURSOR'];
+  if (junkExact.indexOf(key) >= 0) return {cls:'JUNK',why:'cache/diagnostic now kept in CacheService or unused'};
+  if (/^TMV3_PI_(?:DONE|FAILURE|OFFSHARED_INTENT|INFERRED)_/.test(key)) return {cls:'JUNK',why:'short-lived cache'};
+  if (/^TMV3_PI_CONFIRM_TEST_/.test(key)) return {cls:'JUNK',why:'test answer'};
+  if (/^TMV3_PI_(?:NOTIFICATION|QUESTION)_/.test(key)) {
+    const last = json && json.lastSentAt ? String(json.lastSentAt).slice(0, 10) : '';
+    if (value === 'SENT' || (last && last < todayIso)) {
+      const ageDays = last ? Math.round((Date.parse(todayIso) - Date.parse(last)) / 86400000) : 999;
+      if (ageDays > 45) return {cls:'JUNK',why:'email record older than 45 days (appointment long past)'};
+    }
+    return {cls:'KEEP',why:'stops repeat emails'};
+  }
+  if (/^TMV3_(?:PI_|PREINSPECTION_)/.test(key)) return {cls:'KEEP',why:'PreInspection run state'};
+  return {cls:'OTHER',why:'shared V3 / other vertical — not touched'};
+}
+
+/** READ-ONLY: every Script Property grouped by prefix with KEEP / JUNK / OTHER. */
+function piTest_PropertyInventory() {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const today = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const groups = {};
+  Object.keys(props).forEach(function(k) {
+    const c = piTest_propertyClass_(k, props[k], today);
+    const prefix = k.replace(/_[0-9a-f]{16,}$/i, '_*').replace(/_\d{6,}$/, '_*');
+    const g = groups[prefix] || (groups[prefix] = {prefix:prefix,count:0,KEEP:0,JUNK:0,OTHER:0,why:{}});
+    g.count++; g[c.cls]++; g.why[c.why] = true;
+  });
+  const list = Object.keys(groups).map(function(k) { const g = groups[k]; g.why = Object.keys(g.why).join('; '); return g; })
+    .sort(function(a, b) { return b.count - a.count; });
+  const totals = list.reduce(function(t, g) { t.total += g.count; t.KEEP += g.KEEP; t.JUNK += g.JUNK; t.OTHER += g.OTHER; return t; },
+    {total:0,KEEP:0,JUNK:0,OTHER:0});
+  Logger.log('PI_PROPS_TOTALS=' + JSON.stringify(totals));
+  list.forEach(function(g) { Logger.log('PI_PROPS_GROUP=' + JSON.stringify(g)); });
+  return {totals:totals,groups:list};
+}
+
+/** WRITES (deletes): removes only PreInspection keys classified JUNK. Never touches OTHER or KEEP. */
+function piTest_WRITE_CleanupProperties() {
+  const store = PropertiesService.getScriptProperties();
+  const props = store.getProperties();
+  const today = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const deleted = {};
+  Object.keys(props).forEach(function(k) {
+    const c = piTest_propertyClass_(k, props[k], today);
+    if (c.cls !== 'JUNK') return;
+    store.deleteProperty(k);
+    const prefix = k.replace(/_[0-9a-f]{16,}$/i, '_*');
+    deleted[prefix] = (deleted[prefix] || 0) + 1;
+  });
+  const out = {status:'CLEANED',deleted:deleted,deletedTotal:Object.keys(deleted).reduce(function(n, k) { return n + deleted[k]; }, 0),
+    remaining:Object.keys(store.getProperties()).length};
+  Logger.log('PI_PROPS_CLEANUP=' + JSON.stringify(out));
+  return out;
 }
 
