@@ -88,3 +88,26 @@ console.log('PASS: slot simulation evaluates all events, records writes/emails, 
   assert2.equal(calls, 3); assert2.equal(out.lockRetries, 2); assert2.equal(out.writes, 1);
   console.log('PASS: slot retries a busy lock instead of deferring the whole slot');
 }
+
+// Unfinished sweep: a follow-on run is scheduled 1 minute later and itself continues the sweep.
+{
+  const path3 = require('node:path'), h3 = require('./harness.cjs'), assert3 = require('node:assert/strict');
+  const e3 = h3.load(path3.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-12T21:00:00Z')});
+  const c3 = e3.ctx, made = [];
+  c3.ScriptApp.getProjectTriggers = () => [];
+  c3.ScriptApp.newTrigger = h => ({timeBased: () => ({after: ms => ({create: () => made.push({h, ms})})})});
+  assert3.equal(c3.tmv3_preInspectionScheduleNextSweep_(), 'FOLLOW_ON_SCHEDULED_IN_1_MINUTE');
+  assert3.deepEqual(made[0], {h: 'tmv3_preInspectionContinueEligibleSweep', ms: 60000});
+  c3.tmv3_audit_ = () => {}; c3.tmv3_preInspectionRefreshOperatorView_ = () => ({status: 'OK'});
+  let n = 0;
+  c3.tmv3_preInspectionAutomationCycle_ = o => {
+    assert3.equal(o.sweepContinue, true);
+    n++; return n === 1 ? {status: 'COMPLETE', processed: 3, writes: 2, results: [], sweep: {remaining: 2}}
+      : {status: 'COMPLETE', processed: 2, writes: 1, results: [], sweep: {remaining: 0}};
+  };
+  const out = c3.tmv3_preInspectionContinueEligibleSweep();
+  assert3.equal(out.writes, 3); assert3.equal(out.processed, 5); assert3.equal(made.length, 1, 'done: no further follow-on');
+  for (let i = 0; i < 12; i++) c3.tmv3_preInspectionScheduleNextSweep_();
+  assert3.equal(c3.tmv3_preInspectionScheduleNextSweep_(), 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT');
+  console.log('PASS: unfinished sweep continues in follow-on runs until done (max 12 a day)');
+}

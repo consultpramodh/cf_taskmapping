@@ -43,6 +43,9 @@ var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;
 // Operator rule 2026-11-12: every eligible event is corrected in the same slot. The old limit of one
 // Task write per batch is off; a per-slot time limit keeps the run inside Apps Script's 6 minutes.
 var TMV3_PI_ONE_WRITE_PER_BATCH = false;
+// When a slot runs out of time, the rest of the sweep continues 1 minute later in a short follow-on
+// run (one-off trigger), repeated until every eligible event is done. Max 12 follow-ons a day.
+var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -2601,12 +2604,51 @@ function tmv3_preInspectionScheduledCycle() {
   return {status:'RETIRED_FIVE_MINUTE_SCHEDULE',writes:0};
 }
 
+/** Follow-on run: continues an unfinished sweep (no calendar review, no rep-calendar scan). */
 function tmv3_preInspectionContinueEligibleSweep() {
-  return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0,notifications:0};
+  tmv3_preInspectionClearContinuationTrigger_();
+  if (TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE !== true) return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0,notifications:0};
+  const gate = tmv3_piStagingDisabled_(); if (gate) return gate;
+  tmv3_piAssertLockedStandard_();
+  const started = Date.now(), deadline = started + 240000;
+  const run = function(extra) {
+    return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
+  };
+  let result = run();
+  while (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) result = run();
+  const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),results:(result.results || []).slice()};
+  let prior = result.sweep && result.sweep.remaining;
+  while (result.sweep && result.sweep.remaining > 0 && result.processed > 0 && result.status !== 'API_BUDGET_WAIT' &&
+      result.status !== 'LOCK_BUSY' && Date.now() < deadline) {
+    const next = run();
+    totals.processed += Number(next.processed || 0); totals.writes += Number(next.writes || 0);
+    totals.results.push.apply(totals.results, next.results || []);
+    if (!next.sweep || next.sweep.remaining >= prior || !next.processed) { result = next; break; }
+    prior = next.sweep.remaining; result = next;
+  }
+  result.processed = totals.processed; result.writes = totals.writes; result.results = totals.results;
+  tmv3_preInspectionMaybeContinueSweep_(result);
+  try { result.operatorQueue = tmv3_preInspectionRefreshOperatorView_().status; } catch (ignored) {}
+  tmv3_preInspectionLogSweep_('FOLLOW_ON', result);
+  Logger.log(JSON.stringify({slot:'FOLLOW_ON',status:result.status,processed:result.processed,writes:result.writes,
+    sweep:result.sweep,continuation:result.continuation,
+    attentionEvents:(result.results || []).filter(function(r) { return r.status === 'ATTENTION'; })
+      .map(function(r) { return {eventId:r.eventId,blocker:r.blocker || '',error:r.error || ''}; })}));
+  return result;
 }
 
+/** Schedules one follow-on run in 1 minute (never more than one pending, at most 12 a day). */
 function tmv3_preInspectionScheduleNextSweep_() {
-  return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+  if (TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE !== true) return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+  const store = tmv3_piEphemeral_();
+  const day = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const key = 'TMV3_PI_FOLLOW_ON_COUNT_' + day;
+  const count = Number(store.get(key) || 0);
+  if (count >= 12) return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
+  tmv3_preInspectionClearContinuationTrigger_();
+  ScriptApp.newTrigger('tmv3_preInspectionContinueEligibleSweep').timeBased().after(60000).create();
+  store.set(key, String(count + 1), 21600);
+  return 'FOLLOW_ON_SCHEDULED_IN_1_MINUTE';
 }
 
 function tmv3_preInspectionClearContinuationTrigger_() {
@@ -2676,7 +2718,7 @@ function tmv3_runPreInspectionDailySlot_(slot) {
     calendarReview = {status:'PI_REVIEW_ATTENTION',error:String(err && err.message || err).slice(0, 400)};
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
-  const deadline = sheetRefreshStarted + 210000;
+  const deadline = sheetRefreshStarted + 180000;
   let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
   // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
   // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of

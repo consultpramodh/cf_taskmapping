@@ -478,7 +478,9 @@ function piTest_EndToEndCheck() {
     ScriptApp.getProjectTriggers().forEach(function(t) { const h = t.getHandlerFunction(); have[h] = (have[h] || 0) + 1; });
     const missing = expected.filter(function(h) { return !have[h]; });
     const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh'; });
-    const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh'; });
+    // A pending one-off follow-on run (unfinished sweep) is expected, not extra.
+    const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh' &&
+      !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true); });
     const pi = ['tmv3_preInspectionCheck0800', 'tmv3_preInspectionCheck1300', 'tmv3_preInspectionCheck1700'].filter(function(h) { return !have[h]; });
     add('Triggers: PreInspection 08:00 / 13:00 / 17:00', pi.length ? 'FAIL' : 'PASS', pi.length ? 'missing ' + pi.join(', ') : 'all three installed',
       'Run tmv3_installStandardDailyTriggers');
