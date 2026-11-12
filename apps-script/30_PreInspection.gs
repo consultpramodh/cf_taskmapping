@@ -2300,20 +2300,58 @@ function tmv3_piOffSharedSources_() {
     .map(function(s) { return {calendarId:s.id,calendarName:s.name,role:'SECONDARY_OWNER'}; });
 }
 
-/** Operator rule 2026-11-12: a customer visit on an inspector calendar booked by another
- * employee is a pre-inspection unless it is service/repair/delivery/installation/meeting. */
+const TMV3_PI_VISIT_SIGNALS = Object.freeze({
+  PREINSPECTION:[/\bpre[\s-]*inspect/i, /\binspect(?:ion)?\b/i, /\bmeasure(?:ment)?s?\b/i, /\b(?:quote|estimate)\b/i,
+    /\blooking (?:for|to)\b/i, /\b(?:wants?|would like|interested in)\b/i, /\b(?:replace|replacing|remove|removing|convert|converting|upgrade)\b/i,
+    /\bnew (?:fireplace|insert|stove|unit)\b/i, /\boptions?\b/i, /\bsite visit\b/i, /\bon[\s-]?site\b/i, /\bassess/i],
+  SERVICE:[/\bservic(?:e|ing)\b/i, /\brepair/i, /\bmaintenance\b/i, /\bclean(?:ing)?\b/i, /\bnot working\b/i,
+    /\b(?:won'?t|will not|doesn'?t|does not) (?:light|start|turn on|work)\b/i, /\bpilot\b/i, /\bign[io]t(?:er|or)\b/i,
+    /\btroubleshoot/i, /\bwarranty\b/i, /\bparts?\b/i, /\bthermocouple\b/i, /\bno heat\b/i],
+  INSTALLATION:[/\binstall(?:ation|ing|ed)?\b/i, /\bconfirmed\s+SO\b/i, /\bapproved\b/i, /\bdeliver(?:y|ing)?\b/i, /\bpower vent head\b/i,
+    /\bin preparation for\b/i, /\bdemo(?:lition)?\b/i],
+  // Product interest with no service/installation wording: a rep booking a quote visit.
+  PRODUCT:[/\b(?:valor|st[uû]v|regency|napoleon|enviro|kingsman|lopi|fpx|jotul|morso)\b/i, /\binserts?\b/i,
+    /\bzero[\s-]?clearance\b/i, /\bwood (?:burning|insert|stove|fireplace)\b/i, /\bgas (?:unit|fireplace|insert|log)s?\b/i,
+    /\bfireplace\b/i, /\bstove\b/i, /\bmantle\b/i, /\bchimney\b/i]
+});
+
+/** Score title + description for each visit type; returns {type, scores, matched}. */
+function tmv3_piVisitType_(record) {
+  const text = [record.title || '', tmv3_calendarReadableDescription_(record.rawDescription || record.descriptionClean || '')].join(' \n ');
+  const scores = {}, matched = {};
+  Object.keys(TMV3_PI_VISIT_SIGNALS).forEach(function(type) {
+    matched[type] = TMV3_PI_VISIT_SIGNALS[type].filter(function(re) { return re.test(text); }).map(function(re) {
+      return (text.match(re) || [''])[0].toLowerCase();
+    });
+    scores[type] = matched[type].length;
+  });
+  let type = 'UNCLEAR';
+  if (scores.SERVICE && scores.SERVICE >= scores.PREINSPECTION && scores.SERVICE >= scores.INSTALLATION) type = 'SERVICE';
+  else if (scores.INSTALLATION && scores.INSTALLATION >= scores.PREINSPECTION) type = 'INSTALLATION';
+  else if (scores.PREINSPECTION) type = 'PREINSPECTION';
+  else if (scores.PRODUCT && !scores.SERVICE && !scores.INSTALLATION) type = 'PREINSPECTION';
+  return {type:type,scores:scores,matched:matched};
+}
+
+/** Operator rule 2026-11-12: a customer visit on Stephen's calendar booked by another employee,
+ * whose title + description read as a pre-inspection (not service or installation). */
 function tmv3_piRepBookedIntent_(record, cfg) {
   const base = tmv3_preInspectionDiscoveryDecision_(record, cfg);
-  if (base.status === 'EXPLICIT_PREINSPECTION' || base.status === 'IGNORE') return base;
+  if (base.status === 'IGNORE') return base;
   const creator = tmv3_preInspectionCreatorEmail_(record);
   if (!creator) return {status:'REVIEW_VISIT_TYPE',reason:'CREATOR_UNVERIFIED'};
+  if (/\b(?:meeting|follow[\s-]*up)\b/i.test(record.title || '')) return {status:'IGNORE',reason:'INTERNAL_MEETING'};
   const text = [record.title || '', record.descriptionClean || record.rawDescription || ''].join(' ');
-  if (/\b(?:service|repair|maintenance|troubleshoot(?:ing)?|delivery|install(?:ation|ing)?|meeting|follow[\s-]*up)\b/i.test(record.title || ''))
-    return {status:'IGNORE',reason:'OTHER_VISIT_TYPE_IN_TITLE'};
   const customerVisit = !!tmv3_clean_(record.location) || !!tmv3_phone10_(record.phone || tmv3_extractPhone_(text)) ||
     !!tmv3_clean_(record.customerNumber);
   if (!customerVisit) return {status:'IGNORE',reason:'NO_CUSTOMER_VISIT_EVIDENCE'};
-  return {status:'EXPLICIT_PREINSPECTION',reason:'REP_BOOKED_VISIT_ON_INSPECTOR_CALENDAR'};
+  const v = tmv3_piVisitType_(record);
+  if (v.type === 'SERVICE') return {status:'IGNORE',reason:'SERVICE_CALL',signals:v.matched.SERVICE};
+  if (v.type === 'INSTALLATION') return {status:'IGNORE',reason:'INSTALLATION',signals:v.matched.INSTALLATION};
+  if (v.type === 'UNCLEAR' && base.status !== 'EXPLICIT_PREINSPECTION')
+    return {status:'REVIEW_VISIT_TYPE',reason:'VISIT_TYPE_UNCLEAR_NO_EMAIL'};
+  return {status:'EXPLICIT_PREINSPECTION',reason:'REP_BOOKED_PREINSPECTION_ON_INSPECTOR_CALENDAR',
+    signals:v.matched.PREINSPECTION.length ? v.matched.PREINSPECTION : v.matched.PRODUCT};
 }
 
 /** Cached PreInspection-intent decision per event+fingerprint (live order reads cost API calls). */
@@ -2363,7 +2401,7 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       out.checked++;
       let intent = tmv3_piRepBookedIntent_(record, cfg);
       // A Customer # or SO # lets one live Striven read catch installations booked here by mistake.
-      if (intent.status === 'EXPLICIT_PREINSPECTION' && intent.reason === 'REP_BOOKED_VISIT_ON_INSPECTOR_CALENDAR' &&
+      if (intent.status === 'EXPLICIT_PREINSPECTION' && intent.reason === 'REP_BOOKED_PREINSPECTION_ON_INSPECTOR_CALENDAR' &&
           (record.customerNumber || record.orderNumber)) {
         if (out.liveChecks < maxLive) {
           out.liveChecks++;
@@ -2371,6 +2409,10 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
           if (live.status === 'INSTALLATION' || live.reason === 'OTHER_VERTICAL_INTENT_REQUIRES_REVIEW')
             intent = {status:'IGNORE',reason:live.reason};
         } else out.skippedLiveCap++;
+      }
+      if (intent.status === 'REVIEW_VISIT_TYPE') {
+        out.reviewNoEmail = (out.reviewNoEmail || []).concat([{eventId:record.eventId,title:record.title,reason:intent.reason}]);
+        return;
       }
       if (intent.status !== 'EXPLICIT_PREINSPECTION') return;
       out.candidates++;

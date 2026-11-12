@@ -136,7 +136,7 @@ function piTest_PreviewNotices() {
       if (tmv3_preInspectionMissingDetailAssessment_(r).shouldNotify) rows.push(previewOne(r));
     });
     const out = {status:'PREVIEW_ONLY_NO_EMAILS',offSharedChecked:off.checked,offSharedCandidates:off.candidates,
-      skippedLiveCap:off.skippedLiveCap,sourceErrors:off.sourceErrors,wouldSendNow:rows.filter(function(r) { return r.wouldSendNow; }).length,rows:rows};
+      skippedLiveCap:off.skippedLiveCap,sourceErrors:off.sourceErrors,reviewNoEmail:off.reviewNoEmail || [],wouldSendNow:rows.filter(function(r) { return r.wouldSendNow; }).length,rows:rows};
     Logger.log('PI_NOTICE_PREVIEW=' + JSON.stringify(out));
     return out;
   } finally { tmv3_piSendMissingDetailsAfterRelease_ = saved; }

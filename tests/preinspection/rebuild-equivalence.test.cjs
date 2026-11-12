@@ -648,6 +648,11 @@ check('NEW_OFF_SHARED_REP_CALENDAR_NOTICES', () => {
   assert.equal(visit({title: 'Chatsworth - Layout meeting', creator: 'adam@classicfireplace.ca', location: ''}).status, 'IGNORE');
   assert.equal(visit({title: 'Ann Marie paananen 416)266-9473', creator: 'stephen@classicfireplace.ca', location: '26 Cathedral Bluffs Dr'}).status, 'IGNORE');
   assert.equal(visit({title: 'Vince raise units install power vent head', creator: 'adam@classicfireplace.ca', location: '9 Drumsnab Rd'}).status, 'IGNORE');
+  const d = x => ({rawDescription: x, descriptionClean: x});
+  assert.equal(visit(Object.assign({title: 'Ann Lee 416-555-0101', creator: 'steve@classicfireplace.ca', location: '1 A St'}, d('Fireplace not working, pilot will not light'))).reason, 'SERVICE_CALL');
+  assert.equal(visit(Object.assign({title: 'Bo Kim 416-555-0102', creator: 'steve@classicfireplace.ca', location: '1 A St'}, d('Remove gas unit in preparation for demo by contractor'))).reason, 'INSTALLATION');
+  assert.equal(visit(Object.assign({title: 'Cy Doe 416-555-0103', creator: 'steve@classicfireplace.ca', location: '1 A St'}, d('Valor G3 or G3.5'))).status, 'EXPLICIT_PREINSPECTION');
+  assert.equal(visit(Object.assign({title: 'Di Roe 416-555-0104', creator: 'steve@classicfireplace.ca', location: '1 A St'}, d(''))).reason, 'VISIT_TYPE_UNCLEAR_NO_EMAIL');
   const codes = sent[0].missing.map(m => m.code);
   assert.ok(codes.includes('SHARED_CALENDAR') && codes.includes('CUSTOMER_NUMBER') && codes.includes('SALES_ORDER'), codes.join(','));
   assert.equal(out.sourceErrors.length, 0, 'only Stephen is scanned');
