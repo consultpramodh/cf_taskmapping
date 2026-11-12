@@ -73,3 +73,19 @@ console.log('PASS: signed YES/NO links, test answers isolated, tamper rejected, 
   assert.doesNotMatch(o.html, /First, is this appointment/, 'already answered: no box');
   console.log('PASS: YES/NO box only for off-shared look-alike pre-inspections, until answered');
 }
+
+// Steve and Colleen Trevor: an event created by either emails both.
+{
+  assert.deepEqual(Array.from(c.tmv3_piCreatorRecipients_('steve@classicfireplace.ca')), ['steve@classicfireplace.ca', 'colleen@classicfireplace.ca']);
+  assert.deepEqual(Array.from(c.tmv3_piCreatorRecipients_('Colleen@classicfireplace.ca')), ['colleen@classicfireplace.ca', 'steve@classicfireplace.ca']);
+  assert.deepEqual(Array.from(c.tmv3_piCreatorRecipients_('edward@classicfireplace.ca')), ['edward@classicfireplace.ca']);
+  const mails = [];
+  c.MailApp = {getRemainingDailyQuota: () => 100, sendEmail: m => mails.push(m)};
+  Object.keys(env.props.store).filter(k => /NOTIFICATION/.test(k)).forEach(k => env.props.deleteProperty(k));
+  const r = Object.assign({}, record, {eventId: 'z9steve1@google.com', creator: 'steve@classicfireplace.ca', piOffSharedCandidate: true});
+  const res = c.tmv3_piSendMissingDetailsAfterRelease_(r);
+  assert.equal(res.status, 'SENT', JSON.stringify(res));
+  assert.equal(mails[0].to, 'steve@classicfireplace.ca,colleen@classicfireplace.ca');
+  assert.doesNotMatch(mails[0].cc, /steve@|colleen@/);
+  console.log('PASS: Steve and Colleen Trevor both receive emails for either one\'s bookings');
+}

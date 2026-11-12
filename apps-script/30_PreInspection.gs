@@ -38,6 +38,11 @@ var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
 // "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
 // question email is approved (send a TEST first with piTest_SendQuestionTest).
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
+// People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
+var TMV3_PI_CREATOR_PARTNERS = {
+  'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
+  'colleen@classicfireplace.ca': ['steve@classicfireplace.ca']
+};
 // Short-lived caches live in CacheService (auto-expiring, not visible in Script Properties).
 var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = true;
 
@@ -152,6 +157,18 @@ function tmv3_preInspectionApprovalHold_(eventId) {
   });
   if (matches.length > 1) throw new Error('DUPLICATE_PI_OPERATOR_APPROVAL_NO_WRITE');
   return matches.length ? matches[0] : null;
+}
+
+/** Everyone who receives a creator email: the creator plus any partner (TMV3_PI_CREATOR_PARTNERS). */
+function tmv3_piCreatorRecipients_(creatorEmail) {
+  const creator = String(creatorEmail || '').trim().toLowerCase();
+  if (!creator) return [];
+  const out = [creator];
+  (TMV3_PI_CREATOR_PARTNERS[creator] || []).forEach(function(p) {
+    p = String(p).trim().toLowerCase();
+    if (p && out.indexOf(p) < 0 && !tmv3_piCreatorEmailExcluded_(p)) out.push(p);
+  });
+  return out;
 }
 
 function tmv3_piCreatorEmailExcluded_(creatorEmail) {
@@ -1887,7 +1904,9 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   // YES/NO box only for bookings missing CF Preinspects; never on the shared calendar's own events.
   const sendable = record.piVisitQuestion === true && record.piOffSharedCandidate === true &&
     !tmv3_piVisitConfirmation_(record.eventId) ? tmv3_piAddVisitQuestion_(email, record, false) : email;
-  MailApp.sendEmail({to:email.recipient,cc:email.cc.join(','),subject:email.subject,
+  const to = tmv3_piCreatorRecipients_(email.recipient);
+  const cc = (email.cc || []).filter(function(x) { return to.indexOf(String(x).toLowerCase()) < 0; });
+  MailApp.sendEmail({to:to.join(','),cc:cc.join(','),subject:email.subject,
     body:(decision.followupNumber ? 'FOLLOW-UP #' + decision.followupNumber + ': ' : '') +
       'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; ') +
       (sendable.bodySuffix || ''),
@@ -1895,9 +1914,9 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   next.status = 'SENT';
   props.setProperty(key, JSON.stringify(next));
   tmv3_audit_('PreInspection', record.eventId, '', 'MISSING_DETAILS_EMAIL', 'SENT',
-    JSON.stringify({to:email.recipient,followupNumber:decision.followupNumber,missing:assessment.missing,
+    JSON.stringify({to:to,followupNumber:decision.followupNumber,missing:assessment.missing,
       visitQuestion:sendable.questionAdded === true}));
-  return {status:'SENT',sent:1,to:email.recipient,followupNumber:decision.followupNumber,missing:assessment.missing};
+  return {status:'SENT',sent:1,to:to.join(','),followupNumber:decision.followupNumber,missing:assessment.missing};
 }
 
 /** What an automation stop means and what to do, in plain English. */

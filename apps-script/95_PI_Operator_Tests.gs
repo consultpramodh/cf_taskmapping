@@ -167,7 +167,7 @@ function piTest_SendTestEmails() {
       htmlBody:email.htmlBody,name:'Classic Fireplace & BBQ Store'};
     if (message.to !== 'pramodh@classicfireplace.ca' || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
     MailApp.sendEmail(message);
-    sent.push({subject:message.subject,wouldGoTo:email.recipient,wouldCc:email.cc});
+    sent.push({subject:message.subject,wouldGoTo:tmv3_piCreatorRecipients_(email.recipient).join(','),wouldCc:email.cc});
   });
   const out = {status:'TEST_EMAILS_SENT',to:'pramodh@classicfireplace.ca',count:sent.length,emails:sent};
   Logger.log('PI_TEST_EMAILS=' + JSON.stringify(out));
@@ -194,7 +194,7 @@ function piTest_SendQuestionTest() {
       body:'Please update the missing Pre-Inspection details.' + (q.bodySuffix || ''),htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'};
     if (message.to !== 'pramodh@classicfireplace.ca' || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
     MailApp.sendEmail(message);
-    return {subject:message.subject,wouldGoTo:q.recipient,wouldCc:q.cc};
+    return {subject:message.subject,wouldGoTo:tmv3_piCreatorRecipients_(q.recipient).join(','),wouldCc:q.cc};
   });
   const out = {status:'TEST_QUESTIONS_SENT',to:'pramodh@classicfireplace.ca',count:sent.length,emails:sent};
   Logger.log('PI_TEST_QUESTIONS=' + JSON.stringify(out));
