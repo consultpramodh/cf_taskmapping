@@ -38,6 +38,8 @@ var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
 // "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
 // question email is approved (send a TEST first with piTest_SendQuestionTest).
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
+// Operator rule 2026-11-12: the first-email grace period never runs past the appointment.
+var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -1856,6 +1858,9 @@ function tmv3_preInspectionNotificationDecision_(record, state, nowValue) {
     if (due.getUTCDay() !== 0 && due.getUTCDay() !== 6) remaining--;
   }
   const eligibleAt = due.toISOString().slice(0, 10) + created.text.slice(10);
+  // The 2-business-day grace must never run past the appointment: if it would, send now.
+  if (TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT === true && today.text < eligibleAt && eligibleAt.slice(0, 10) >= appointment.text.slice(0, 10))
+    return {status:'FIRST_DUE_GRACE_WOULD_MISS_APPOINTMENT',send:true,followupNumber:0};
   return today.text >= eligibleAt ? {status:'FIRST_DUE',send:true,followupNumber:0} :
     {status:'GRACE_PERIOD',send:false,eligibleAt:eligibleAt,timezone:'America/Toronto'};
 }

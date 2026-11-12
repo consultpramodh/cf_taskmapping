@@ -54,3 +54,16 @@ assert.equal(flow(base).sideEffects,0);
 console.log('PASS: six connected-stage dry-run assertions');
 
 assert.equal(payload({nested:[{fieldId:854,value:'private'}]},'PATCH').decision,'REJECT_PROTECTED_FIELDS');
+
+// Grace period never runs past the appointment (Sara Elliott case: booked Thu 11:32, visit Mon 09:00).
+{
+  const path2 = require('node:path'), h2 = require('./harness.cjs');
+  const e2 = h2.load(path2.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-12T17:30:00Z')});
+  const rec = {start: '2026-11-16T14:00:00.000Z', calendarCreatedAt: '2026-11-12T16:32:21.000Z', status: 'confirmed'};
+  const d = e2.ctx.tmv3_preInspectionNotificationDecision_(rec, null);
+  require('node:assert/strict').equal(d.send, true, JSON.stringify(d));
+  require('node:assert/strict').equal(d.status, 'FIRST_DUE_GRACE_WOULD_MISS_APPOINTMENT');
+  const later = e2.ctx.tmv3_preInspectionNotificationDecision_(Object.assign({}, rec, {start: '2026-11-26T14:00:00.000Z'}), null);
+  require('node:assert/strict').equal(later.status, 'GRACE_PERIOD', 'normal grace kept when the visit is well after it');
+  console.log('PASS: grace period never runs past the appointment');
+}
