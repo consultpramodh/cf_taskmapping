@@ -20,3 +20,4 @@
 - 2026-11-12: The one-time Oct 20 Service/Delivery order backfill is retired (TMV3_SD_ORDER_BACKFILL_RETIRED); 69 orders finished, 12 BLOCKED were left for manual SO# attachment.
 - 2026-11-12: Open — cap reminders (at most 3 per booking; Jay/Thang CC on the final one only) awaiting operator approval.
 - 2026-11-12: Live project structure changed by the operator (capture 4439459): `90_Regression_Tests` removed from live, `70_Contractor_Weekly` (read-only contractor email/calendar tracker; adds the full Gmail scope) added, operator tools kept, web app manifest added (execute as deployer, domain access). Repo mirrors live; the regression suite is kept only as a test fixture. Menu items "Run Live Hardening Regression" and the shadow-map tools no longer work in live; scheduled automation does not use them.
+- 2026-11-12: Live files renamed to match their content (95_PI_Operator_Tests, 70_Contractor_Weekly). Capture 3b016b7 is identical to this branch for every file.
