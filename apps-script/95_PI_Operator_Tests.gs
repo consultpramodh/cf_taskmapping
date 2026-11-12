@@ -8,7 +8,9 @@
 //   piTest_ConfirmationAnswers()      READ-ONLY: recorded YES/NO answers
 //   piTest_LastState()                READ-ONLY: last run result and pending queue
 //   piTest_PropertyInventory()        READ-ONLY: Script Properties as KEEP / JUNK / OTHER
-//   piTest_WRITE_CleanupProperties()  deletes PreInspection JUNK properties only
+//   piTest_WRITE_CleanupProperties()  deletes JUNK properties only
+//   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
+//   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
 // Settings live inside a function (no top-level variables), so this file can never
 // clash with another file's declarations.
@@ -344,3 +346,67 @@ function piTest_WRITE_CleanupProperties() {
   return out;
 }
 
+
+/** Map each held record (unfinished write or duplicate-Task guard) to its appointment and check
+ * Striven fresh: RESOLVED when the Task exists, is linked and needs no further action; PAST when the
+ * appointment is no longer on any calendar; OPEN otherwise (left alone). Read-only. */
+function piTest_heldRecords_() {
+  const props = PropertiesService.getScriptProperties().getProperties();
+  const upcoming = piTest_upcomingEventHashes_();
+  if (!upcoming) throw new Error('PI_TEST_CALENDARS_UNREADABLE_NOTHING_CHECKED');
+  const reverse = {};
+  Object.keys(upcoming.ids).forEach(function(id) {
+    ['PreInspection', 'Install', 'Delivery', 'Service'].forEach(function(v) { reverse[tmv3_hash_(v + '|' + id)] = {vertical:v, eventId:id}; });
+  });
+  const rows = [];
+  Object.keys(props).forEach(function(key) {
+    const json = piTest_json_(props[key]) || {};
+    let target = null, kind = '';
+    const ev = /^TMV3_VERTICAL_EVENT_([0-9a-f]{64})$/.exec(key);
+    if (ev && ['INTENT','UNCERTAIN'].indexOf(json.state) >= 0) { kind = 'UNFINISHED_WRITE'; target = reverse[ev[1]] || null; }
+    else if (/^TMV3_TASK_CREATE_GUARD_/.test(key) && json.eventId) {
+      kind = 'TASK_GUARD'; target = upcoming.ids[json.eventId] ? {vertical:json.vertical, eventId:json.eventId} : null;
+    } else return;
+    const row = {key:key, kind:kind, state:json.state || '', error:String(json.error || '').slice(0, 160),
+      vertical:target && target.vertical || json.vertical || '', eventId:target && target.eventId || json.eventId || ''};
+    if (!target) { row.verdict = 'PAST'; rows.push(row); return; }
+    try {
+      const plans = tmv3_step7FreshPlansForEvent_(target.vertical, target.eventId);
+      row.plans = plans.map(function(p) { return {taskId:p.taskId || '', plan:p.plan, actions:p.actions || [], blocker:p.blocker || ''}; });
+      const done = plans.length > 0 && plans.every(function(p) {
+        return p.taskId && !p.blocker && (p.actions || []).every(function(a) { return a === 'VERIFY_CALENDAR_LINKS'; });
+      });
+      const guardTask = kind === 'TASK_GUARD' && Number(json.taskId || 0);
+      row.verdict = done && (!guardTask || plans.some(function(p) { return Number(p.taskId) === guardTask; })) ? 'RESOLVED' : 'OPEN';
+    } catch (e) { row.verdict = 'OPEN'; row.checkError = String(e && e.message || e).slice(0, 160); }
+    rows.push(row);
+  });
+  return rows;
+}
+
+/** READ-ONLY: list unfinished writes and duplicate-Task guards with a verdict for each. */
+function piTest_HeldRecords() {
+  const rows = piTest_heldRecords_();
+  rows.forEach(function(r) { Logger.log('PI_HELD=' + JSON.stringify(r)); });
+  const count = {};
+  rows.forEach(function(r) { count[r.verdict] = (count[r.verdict] || 0) + 1; });
+  Logger.log('PI_HELD_SUMMARY=' + JSON.stringify(count));
+  return rows;
+}
+
+/** WRITES (deletes): removes held records whose appointment is past, or whose Task Striven shows
+ * exists, is linked and needs nothing more. OPEN records are left for a person to check. */
+function piTest_WRITE_ClearResolvedHeld() {
+  const store = PropertiesService.getScriptProperties();
+  const rows = piTest_heldRecords_();
+  const cleared = [];
+  rows.forEach(function(r) {
+    if (r.verdict !== 'RESOLVED' && r.verdict !== 'PAST') return;
+    store.deleteProperty(r.key);
+    cleared.push({kind:r.kind, verdict:r.verdict, vertical:r.vertical, eventId:r.eventId});
+  });
+  const out = {status:'CLEARED', cleared:cleared.length, open:rows.filter(function(r) { return r.verdict === 'OPEN'; }).length,
+    remaining:Object.keys(store.getProperties()).length, details:cleared};
+  Logger.log('PI_HELD_CLEARED=' + JSON.stringify(out));
+  return out;
+}

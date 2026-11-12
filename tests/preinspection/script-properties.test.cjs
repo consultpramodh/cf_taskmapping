@@ -86,3 +86,30 @@ env.props.setProperty('TMV3_PI_ORIGIN_' + 'c'.repeat(64), '{}');
 c.piTest_WRITE_CleanupProperties();
 assert.ok(env.props.getProperty('TMV3_PI_ORIGIN_' + 'c'.repeat(64)) !== null, 'kept when calendars unreadable');
 console.log('PASS: caches kept out of Script Properties; cleanup deletes only PreInspection junk');
+
+// Held records: resolved in Striven or past -> cleared; still open -> kept.
+{
+  Object.keys(env.props.store).forEach(k => env.props.deleteProperty(k));
+  const kA = 'TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Install|a@google.com');
+  const kB = 'TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Service|b@google.com');
+  const kC = 'TMV3_VERTICAL_EVENT_' + c.tmv3_hash_('Install|gone@google.com');
+  env.props.setProperty(kA, '{"state":"UNCERTAIN","error":"timeout"}');
+  env.props.setProperty(kB, '{"state":"INTENT"}');
+  env.props.setProperty(kC, '{"state":"UNCERTAIN"}');
+  env.props.setProperty('TMV3_TASK_CREATE_GUARD_q', JSON.stringify({vertical:'Install', eventId:'a@google.com', taskId:77, state:'VERIFIED'}));
+  env.props.setProperty('CLIENT_ID', 'x');
+  c.piTest_upcomingEventHashes_ = () => ({ids: {'a@google.com': true, 'b@google.com': true}, byVertical: {}});
+  c.tmv3_step7FreshPlansForEvent_ = (v, id) => id === 'a@google.com'
+    ? [{taskId: 77, plan: 'NO_CHANGE', actions: ['VERIFY_CALENDAR_LINKS']}]
+    : [{taskId: '', plan: 'CREATE_TASK', actions: ['CREATE_TASK']}];
+  const rows = c.piTest_HeldRecords();
+  const v = Object.fromEntries(rows.map(r => [r.key, r.verdict]));
+  assert.equal(v[kA], 'RESOLVED'); assert.equal(v[kB], 'OPEN'); assert.equal(v[kC], 'PAST');
+  assert.equal(v.TMV3_TASK_CREATE_GUARD_q, 'RESOLVED');
+  const res = c.piTest_WRITE_ClearResolvedHeld();
+  assert.equal(res.cleared, 3); assert.equal(res.open, 1);
+  assert.deepEqual(Object.keys(env.props.store).sort(), ['CLIENT_ID', kB].sort());
+  c.piTest_upcomingEventHashes_ = () => null;
+  assert.throws(() => c.piTest_HeldRecords(), /CALENDARS_UNREADABLE/);
+  console.log('PASS: held records cleared only when past or resolved in Striven');
+}
