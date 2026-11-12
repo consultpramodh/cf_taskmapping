@@ -222,12 +222,19 @@ function piTest_propertyClass_(key, value, todayIso, upcoming) {
   const vEvent = /^TMV3_VERTICAL_EVENT_([0-9a-f]{64})$/.exec(key);
   if (vEvent) {
     if (unfinished) return {cls:'KEEP',why:'unfinished write: check Striven for this appointment first'};
+    if (json && json.state === 'VERIFIED') return {cls:'JUNK',why:'log of a finished write (TM Audit has it)'};
     if (upcoming && !upcoming.byVertical[vEvent[1]]) return {cls:'JUNK',why:'write record for a past appointment'};
     return {cls:'KEEP',why:'write record for an upcoming appointment'};
   }
   if (/^TMV3_VERTICAL_ALERT_/.test(key)) return value === 'SENT' ? {cls:'JUNK',why:'failure-alert "sent today" flag'} : {cls:'KEEP',why:'alert being sent'};
   if (/^TMV3_VERTICAL_(?:LAST|CURSOR)_/.test(key) || key === 'TMV3_STANDARD_SCHEDULE')
     return {cls:'JUNK',why:'old status/cursor no code reads'};
+  if (/^TMV3_VERTICAL_RESULT_/.test(key) || /^TMV3_SHEET_REFRESH_LAST_(?:SUCCESS|ERROR)$/.test(key))
+    return {cls:'JUNK',why:'status log (now kept in cache; TM Audit has it)'};
+  if (key === 'TMV3_STRIVEN_API_BUDGET_EXHAUSTED_DATE' || key === 'TMV3_STRIVEN_API_BUDGET_EXHAUSTED_REASON') {
+    const d = String((piTest_json_(props_exhaustedDate_()) || '')).slice(0, 10);
+    return d === todayIso ? {cls:'KEEP',why:'Striven daily limit hit today: pauses calls'} : {cls:'JUNK',why:'old "Striven limit reached" note from a past day'};
+  }
   if (/^TMV3_SD_ORDER_BACKFILL_20261020_/.test(key))
     return typeof TMV3_SD_ORDER_BACKFILL_RETIRED !== 'undefined' && TMV3_SD_ORDER_BACKFILL_RETIRED === true ?
       {cls:'JUNK',why:'one-time Oct 20 order backfill (retired)'} : {cls:'KEEP',why:'Oct 20 order backfill still running (retire it in 10_Shared_Core first)'};
@@ -275,6 +282,10 @@ function piTest_upcomingEventHashes_() {
     }
   }
   return out;
+}
+
+function props_exhaustedDate_() {
+  try { return PropertiesService.getScriptProperties().getProperty('TMV3_STRIVEN_API_BUDGET_EXHAUSTED_DATE') || ''; } catch (e) { return ''; }
 }
 
 /** Group label: collapses hashes, IDs and dates so similar keys show as one line. */
