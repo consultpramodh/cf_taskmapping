@@ -40,6 +40,16 @@ var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
 // Operator rule 2026-11-12: the first-email grace period never runs past the appointment.
 var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;
+// Operator rule 2026-11-12: every eligible event is corrected in the same slot. The old limit of one
+// Task write per batch is off; a per-slot time limit keeps the run inside Apps Script's 6 minutes.
+var TMV3_PI_ONE_WRITE_PER_BATCH = false;
+// When a slot runs out of time, the rest of the sweep continues 1 minute later in a short follow-on
+// run (one-off trigger), repeated until every eligible event is done. Max 12 follow-ons a day.
+var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
+// Requested By = the employee who created the event; the calendar owner only as a fallback.
+var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
+// One empty line between the event notes and "-----Striven Links-----" (operator rule 2026-11-13).
+var TMV3_PI_BLANK_LINE_BEFORE_LINKS = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -1250,7 +1260,9 @@ function tmv3_preInspectionAuthoredMarkup_(description) {
   const offset = tmv3_managedCalendarBlockStart_(raw);
   if (offset >= 0) {
     raw = raw.slice(0, offset);
-    raw = raw.replace(/(?:<br\s*\/?>|\r?\n)\s*$/i, ''); // only the separator before our footer
+    raw = TMV3_PI_BLANK_LINE_BEFORE_LINKS === true
+      ? raw.replace(/(?:(?:<br\s*\/?>|\r?\n)\s*)+$/i, '') // whole separator before our footer (re-added below)
+      : raw.replace(/(?:<br\s*\/?>|\r?\n)\s*$/i, ''); // only the separator before our footer
   }
   if (/<[a-z][^>]*>/i.test(raw)) return raw.replace(/\s+$/, '');
   // Hyperlinks need markup: escape plain text and map each newline to one <br>.
@@ -1269,7 +1281,8 @@ function tmv3_preInspectionClickableManagedDescription_(existingDescription, pla
   const authored = tmv3_preInspectionAuthoredMarkup_(before);
   const header = tmv3_calendarHtmlEscape_(TMV3_FINAL_LINK_HEADING);
   const footer = header + (links.length ? '<br>' + links.map(tmv3_preInspectionHtmlLink_).join('<br>') : '');
-  const out = authored + (authored ? '<br>' : '') + footer;
+  const separator = TMV3_PI_BLANK_LINE_BEFORE_LINKS === true ? '<br><br>' : '<br>';
+  const out = authored + (authored ? separator : '') + footer;
   tmv3_assertPreInspectionLinkDescription_(out, plan);
   return {description:out,status:out === before ? 'LINKS_ALREADY_CANONICAL' : 'LINKS_REQUIRE_UPDATE',changed:out !== before};
 }
@@ -1530,6 +1543,12 @@ function tmv3_piAssertRequestedByPlan_(plan, record) {
     throw new Error(owner.blocker || 'PI_REQUESTED_BY_OWNER_UNVERIFIED_NO_WRITE');
   if (type !== 'employee' || !tmv3_piPositiveId_(rawId || '') || !Number.isSafeInteger(id) || id <= 0)
     throw new Error('PI_EXPECTED_REQUESTED_BY_EMPLOYEE_NOT_PROVEN_NO_WRITE');
+  // Operator rule 2026-11-13: Requested By is the employee who created the event. The calendar
+  // owner is used only when the creator is not a (unique) Striven employee.
+  if (TMV3_PI_REQUESTED_BY_CREATOR_FIRST === true && creatorId) {
+    if (id !== creatorId) throw new Error('PI_REQUESTED_BY_MUST_BE_EVENT_CREATOR_NO_WRITE');
+    return true;
+  }
   if (id !== owner.employeeId && id !== creatorId)
     throw new Error('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE');
   return true;
@@ -2114,8 +2133,9 @@ function tmv3_piReconcileAuthoritativeEvent_(cycle, record, one, doneKey) {
   one.plan = plan.plan; one.blocker = plan.blocker || ''; one.taskId = plan.taskId || '';
 
   // F4 one business transaction per batch; a deferred event keeps its sweep position.
-  if (!plan.blocker && plan.actions.length && result.writes >= 1) return 'DEFER';
-  if (!plan.blocker && plan.actions.length && result.writes < 1) {
+  const oneWriteCap = TMV3_PI_ONE_WRITE_PER_BATCH === true;
+  if (oneWriteCap && !plan.blocker && plan.actions.length && result.writes >= 1) return 'DEFER';
+  if (!plan.blocker && plan.actions.length && (!oneWriteCap || result.writes < 1)) {
     if (tmv3_piPlanTouchesTask_(plan)) result.writes++;
     one.execution = tmv3_executeFreshStep7Selection_({previousPlan:plan.plan,contract:plan}, 'PREINSPECTIONAUTO', 'ALL');
     if (!/VERIFIED|CONVERGED|NO_CHANGE/.test(String(one.execution.status || ''))) {
@@ -2286,11 +2306,13 @@ function tmv3_piCycleBody_(cycle) {
     catch (err) { result.status = 'ATTENTION'; tmv3_preInspectionFailureAlert_(r.eventId, String(err)); }
   });
 
-  // Stage F: tested safety budgets — at most three events and one business write.
+  // Stage F: at most three events per batch; all eligible writes run (see TMV3_PI_ONE_WRITE_PER_BATCH).
   let cursor = cycle.sweep ? 0 : Number(props.getProperty('TMV3_PI_CURSOR') || 0);
   const cap = Math.max(1, Math.min(3, Number(TMV3.OPERATIONS.preInspectionAutomationMaxEventsPerRun || 3)));
   if (selected.length) cursor = cursor % selected.length;
   for (let i = 0; i < Math.min(cap, selected.length); i++) {
+    // Slot time limit: stop before starting another event; it stays next in the sweep.
+    if (i > 0 && options.deadline && Date.now() > Number(options.deadline)) { result.deadlineReached = true; break; }
     const record = selected[(cursor + i) % selected.length];
     const one = {eventId:record.eventId};
     result.processed++;
@@ -2595,12 +2617,53 @@ function tmv3_preInspectionScheduledCycle() {
   return {status:'RETIRED_FIVE_MINUTE_SCHEDULE',writes:0};
 }
 
+/** Follow-on run: continues an unfinished sweep (no calendar review, no rep-calendar scan). */
 function tmv3_preInspectionContinueEligibleSweep() {
-  return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0,notifications:0};
+  tmv3_preInspectionClearContinuationTrigger_();
+  if (TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE !== true) return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0,notifications:0};
+  const gate = tmv3_piStagingDisabled_(); if (gate) return gate;
+  tmv3_piAssertLockedStandard_();
+  const started = Date.now(), deadline = started + 240000;
+  const run = function(extra) {
+    return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
+  };
+  let result = run();
+  // Run by hand with no unfinished sweep: start a fresh one so every eligible event is checked now.
+  if (result.status === 'NO_ACTIVE_PREINSPECTION_SWEEP') result = run({sweepContinue:false,sweepStart:true,reason:'SWEEP_FOLLOW_ON_FRESH'});
+  while (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) result = run();
+  const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),results:(result.results || []).slice()};
+  let prior = result.sweep && result.sweep.remaining;
+  while (result.sweep && result.sweep.remaining > 0 && result.processed > 0 && result.status !== 'API_BUDGET_WAIT' &&
+      result.status !== 'LOCK_BUSY' && Date.now() < deadline) {
+    const next = run();
+    totals.processed += Number(next.processed || 0); totals.writes += Number(next.writes || 0);
+    totals.results.push.apply(totals.results, next.results || []);
+    if (!next.sweep || next.sweep.remaining >= prior || !next.processed) { result = next; break; }
+    prior = next.sweep.remaining; result = next;
+  }
+  result.processed = totals.processed; result.writes = totals.writes; result.results = totals.results;
+  tmv3_preInspectionMaybeContinueSweep_(result);
+  try { result.operatorQueue = tmv3_preInspectionRefreshOperatorView_().status; } catch (ignored) {}
+  tmv3_preInspectionLogSweep_('FOLLOW_ON', result);
+  Logger.log(JSON.stringify({slot:'FOLLOW_ON',status:result.status,processed:result.processed,writes:result.writes,
+    sweep:result.sweep,continuation:result.continuation,
+    attentionEvents:(result.results || []).filter(function(r) { return r.status === 'ATTENTION'; })
+      .map(function(r) { return {eventId:r.eventId,blocker:r.blocker || '',error:r.error || ''}; })}));
+  return result;
 }
 
+/** Schedules one follow-on run in 1 minute (never more than one pending, at most 12 a day). */
 function tmv3_preInspectionScheduleNextSweep_() {
-  return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+  if (TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE !== true) return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+  const store = tmv3_piEphemeral_();
+  const day = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const key = 'TMV3_PI_FOLLOW_ON_COUNT_' + day;
+  const count = Number(store.get(key) || 0);
+  if (count >= 12) return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
+  tmv3_preInspectionClearContinuationTrigger_();
+  ScriptApp.newTrigger('tmv3_preInspectionContinueEligibleSweep').timeBased().after(60000).create();
+  store.set(key, String(count + 1), 21600);
+  return 'FOLLOW_ON_SCHEDULED_IN_1_MINUTE';
 }
 
 function tmv3_preInspectionClearContinuationTrigger_() {
@@ -2670,14 +2733,15 @@ function tmv3_runPreInspectionDailySlot_(slot) {
     calendarReview = {status:'PI_REVIEW_ATTENTION',error:String(err && err.message || err).slice(0, 400)};
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
-  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,reason:'DAILY_SLOT_' + slot});
+  const deadline = sheetRefreshStarted + 180000;
+  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
   // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
   // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of
   // giving the whole slot up; the batch time limit below still ends the slot well inside 6 minutes.
   const lockRetries = [];
   while (result.status === 'LOCK_BUSY' && Date.now() - sheetRefreshStarted < 150000) {
     lockRetries.push(new Date().toISOString());
-    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
+    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
   }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),
     notifications:Number(result.notifications || 0),results:(result.results || []).slice()};
@@ -2685,8 +2749,8 @@ function tmv3_runPreInspectionDailySlot_(slot) {
   const batchStatuses = [result.status];
   while (result.sweep && result.sweep.remaining > 0 && result.processed > 0 &&
       result.status !== 'API_BUDGET_WAIT' && result.status !== 'LOCK_BUSY' &&
-      Date.now() - sheetRefreshStarted < 240000) {
-    const next = tmv3_preInspectionAutomationCycle_({force:true,sweepContinue:true,reason:'DAILY_SLOT_' + slot});
+      Date.now() < deadline) {
+    const next = tmv3_preInspectionAutomationCycle_({force:true,sweepContinue:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
     batchStatuses.push(next.status);
     totals.processed += Number(next.processed || 0); totals.writes += Number(next.writes || 0);
     totals.notifications += Number(next.notifications || 0); totals.results.push.apply(totals.results, next.results || []);
@@ -3299,6 +3363,13 @@ function tmv3_piDryRunRecord_(record, nowValue) {
     return h ? {status:'HELD',mode:h.mode} : {status:'NONE'};
   });
   stage('OWNER_REQUESTED_BY', function() { return tmv3_piVerifiedOwnerEmployee_(record); });
+  stage('CREATOR_REQUESTED_BY', function() {
+    const id = tmv3_piCreatorEmployeeId_(record);
+    const emp = id ? (tmv3_employeeDirectory_() || []).filter(function(e) { return Number(e.id) === id; })[0] : null;
+    return id ? {status:'MATCHED',employeeId:id,employeeName:emp && emp.name || '',creator:record.creator || record.organizer || '',
+      usedForRequestedBy:TMV3_PI_REQUESTED_BY_CREATOR_FIRST === true} :
+      {status:'NOT_AN_EMPLOYEE',creator:record.creator || record.organizer || '',fallback:'CALENDAR_OWNER'};
+  });
   const assessment = stage('MISSING_DETAILS', function() { return tmv3_preInspectionMissingDetailAssessment_(record); });
   stage('NOTIFICATION_DECISION', function() {
     if (authoritative.status !== 'AUTHORITATIVE') return {status:'NONAUTHORITATIVE_SOURCE_NO_SEND',send:false};
