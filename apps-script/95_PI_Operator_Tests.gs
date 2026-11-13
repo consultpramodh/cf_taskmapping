@@ -485,7 +485,8 @@ function piTest_EndToEndCheck() {
     const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh'; });
     // A pending one-off follow-on run (unfinished sweep) is expected, not extra.
     const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh' &&
-      !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true); });
+      !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) &&
+      !(h === 'tmv3_installSweepContinue' && have[h] === 1 && typeof TMV3_VERTICAL_FOLLOW_ON !== 'undefined' && TMV3_VERTICAL_FOLLOW_ON.Install); });
     const pi = ['tmv3_preInspectionCheck0800', 'tmv3_preInspectionCheck1300', 'tmv3_preInspectionCheck1700'].filter(function(h) { return !have[h]; });
     add('Triggers: PreInspection 08:00 / 13:00 / 17:00', pi.length ? 'FAIL' : 'PASS', pi.length ? 'missing ' + pi.join(', ') : 'all three installed',
       'Run tmv3_installStandardDailyTriggers');
@@ -640,6 +641,9 @@ function piTest_TriggerAudit() {
     if (h === 'tmv3_scheduledSheetRefresh') { kind = 'SHEET REFRESH 8/13/17'; status = n === 3 ? 'PASS' : 'WARN'; }
     else if (h === 'tmv3_preInspectionContinueEligibleSweep' && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) {
       kind = 'PI FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
+    }
+    else if (h === 'tmv3_installSweepContinue' && typeof TMV3_VERTICAL_FOLLOW_ON !== 'undefined' && TMV3_VERTICAL_FOLLOW_ON.Install) {
+      kind = 'INSTALL FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
     }
     rows.push({handler:h, kind:kind, installed:n, functionExists:typeof globalThis[h] === 'function', status:status});
   });

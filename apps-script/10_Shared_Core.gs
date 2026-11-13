@@ -20398,31 +20398,66 @@ function tmv3_automationSheetRefreshStatus() {
 
 // Google Apps Script: resume the same daily sweep; no additional recurring window.
 
-function tmv3_runFullVerticalSweep_(vertical) {
+// Workflows whose sweep finishes in follow-on runs instead of waiting for the next slot
+// (operator rule 2026-11-13; Install first). Handler = the one-off follow-on trigger function.
+var TMV3_VERTICAL_FOLLOW_ON = {Install:'tmv3_installSweepContinue'};
+
+function tmv3_runFullVerticalSweep_(vertical, options) {
+  options = options || {};
+  const followOn = !!TMV3_VERTICAL_FOLLOW_ON[vertical];
   const began=Date.now();let result=tmv3_verticalProductionCycle_(vertical);
+  // Another workflow holds the script lock: keep asking for up to 2 minutes instead of giving up.
+  const lockRetries=[];
+  while (followOn && result.status==='LOCK_BUSY' && Date.now()-began<120000) {
+    Utilities.sleep(15000); lockRetries.push(new Date().toISOString());
+    result=tmv3_verticalProductionCycle_(vertical);
+  }
   let totalWrites=Number(result.writes||0),totalScanned=Number(result.scanned||0),allResults=(result.results||[]).slice(),batchStatuses=[result.status];
+  // A batch can take ~2 minutes, so with follow-ons a new one starts only in the first 2.5 minutes
+  // (keeps the whole slot inside Apps Script's 6-minute limit; the rest continues a minute later).
+  const startBy = followOn ? 150000 : 240000;
   while (result.pending>0 && result.status!=='API_BUDGET_WAIT' && result.status!=='LOCK_BUSY' &&
-      result.scanned>0 && Date.now()-began<240000) {
+      result.scanned>0 && Date.now()-began<startBy) {
     const before=result.pending,next=tmv3_verticalProductionCycle_(vertical);
     batchStatuses.push(next.status);
     totalWrites+=Number(next.writes||0);totalScanned+=Number(next.scanned||0);allResults.push.apply(allResults,next.results||[]);
     result=next;if(!next.scanned || next.pending>=before)break;
   }
   result.batchStatuses=batchStatuses;
+  if(lockRetries.length)result.lockRetries=lockRetries.length;
   result.writes=totalWrites;result.scanned=totalScanned;result.results=allResults;
-  if(result.status==='LOCK_BUSY'||result.pending>0) result.continuation='DEFERRED_TO_NEXT_STANDARD_SLOT';
+  if(result.status==='LOCK_BUSY'||result.pending>0) {
+    result.continuation='DEFERRED_TO_NEXT_STANDARD_SLOT';
+    if(followOn && result.status!=='API_BUDGET_WAIT') {
+      try { result.continuation=tmv3_verticalScheduleFollowOn_(vertical); }
+      catch(err) { result.continuation='FOLLOW_ON_SCHEDULING_FAILED: '+String(err && err.message || err).slice(0,160); }
+    }
+  }
   PropertiesService.getScriptProperties().setProperty('TMV3_SHEET_REFRESH_PENDING','true');
   result.sheetRefresh={status:'DEFERRED_TO_NEXT_STANDARD_SLOT'};
   if(vertical==='Install' && result.sweep && result.sweep.complete)result.sheetRefresh=tmv3_installSchedulePublication_();
   Logger.log(JSON.stringify(result));return result;
 }
 
+/** One follow-on run in 1 minute for this workflow (never more than one pending, max 12 a day). */
+function tmv3_verticalScheduleFollowOn_(vertical) {
+  const handler=TMV3_VERTICAL_FOLLOW_ON[vertical];
+  if(!handler)return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+  const day=Utilities.formatDate(new Date(),TMV3_TIMEZONE,'yyyy-MM-dd');
+  const key='TMV3_'+vertical.toUpperCase()+'_FOLLOW_ON_COUNT_'+day;
+  let count=0;try{count=Number(CacheService.getScriptCache().get(key)||0);}catch(ignored){}
+  if(count>=12)return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
+  tmv3_verticalClearFollowOn_(vertical);
+  ScriptApp.newTrigger(handler).timeBased().after(60000).create();
+  try{CacheService.getScriptCache().put(key,String(count+1),21600);}catch(ignored){}
+  return 'FOLLOW_ON_SCHEDULED_IN_1_MINUTE';
+}
 
-
-
-
-
-
+function tmv3_verticalClearFollowOn_(vertical) {
+  const handler=TMV3_VERTICAL_FOLLOW_ON[vertical];
+  if(!handler)return;
+  ScriptApp.getProjectTriggers().forEach(function(t){if(t.getHandlerFunction()===handler)ScriptApp.deleteTrigger(t);});
+}
 
 function tmv3_verticalPatchDiagnostics(vertical,eventIds) {
   if(['Install','Delivery','Service'].indexOf(vertical)<0)throw Error('VERTICAL_REQUIRED');

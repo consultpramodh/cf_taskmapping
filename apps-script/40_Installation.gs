@@ -305,7 +305,14 @@ function tmv3_installStandardDailyTriggers() {
 }
 
 // Original: 60_Automation; Function: tmv3_installSweepContinue
-function tmv3_installSweepContinue(){return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0};}
+function tmv3_installSweepContinue(){
+  // Follow-on run: continues an unfinished Install sweep a minute after a slot ran out of time.
+  tmv3_verticalClearFollowOn_('Install');
+  if(!TMV3_VERTICAL_FOLLOW_ON.Install)return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0};
+  const result=tmv3_runFullVerticalSweep_('Install',{followOn:true});
+  tmv3_audit_('Install','','','STANDARD_DAILY_SLOT',result.status,JSON.stringify({slot:'FOLLOW_ON',result:result}));
+  return result;
+}
 
 // Original: 60_Automation; Function: tmv3_installResolveContactFresh_
 function tmv3_installResolveContactFresh_(record,customerId,preferredContactId,plan) {

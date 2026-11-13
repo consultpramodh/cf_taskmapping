@@ -5,12 +5,14 @@ on:
     paths:
       - apps-script/**
       - tests/preinspection/**
+      - tests/vertical/**
       - .github/workflows/pi-rebuild-decisions.yml
   pull_request:
     branches: [main, preinspection]
     paths:
       - apps-script/**
       - tests/preinspection/**
+      - tests/vertical/**
       - .github/workflows/pi-rebuild-decisions.yml
 permissions:
   contents: read
@@ -39,3 +41,5 @@ jobs:
         run: node tests/preinspection/visit-confirmation.test.cjs
       - name: Script Properties hygiene
         run: node tests/preinspection/script-properties.test.cjs
+      - name: Install sweep follow-on runs
+        run: node tests/vertical/install-follow-on.test.cjs
