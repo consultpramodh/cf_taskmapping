@@ -2628,6 +2628,8 @@ function tmv3_preInspectionContinueEligibleSweep() {
     return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
   };
   let result = run();
+  // Run by hand with no unfinished sweep: start a fresh one so every eligible event is checked now.
+  if (result.status === 'NO_ACTIVE_PREINSPECTION_SWEEP') result = run({sweepContinue:false,sweepStart:true,reason:'SWEEP_FOLLOW_ON_FRESH'});
   while (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) result = run();
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),results:(result.results || []).slice()};
   let prior = result.sweep && result.sweep.remaining;

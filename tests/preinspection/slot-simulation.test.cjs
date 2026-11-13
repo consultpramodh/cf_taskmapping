@@ -111,3 +111,17 @@ console.log('PASS: slot simulation evaluates all events, records writes/emails, 
   assert3.equal(c3.tmv3_preInspectionScheduleNextSweep_(), 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT');
   console.log('PASS: unfinished sweep continues in follow-on runs until done (max 12 a day)');
 }
+
+// Follow-on run with no unfinished sweep starts a fresh sweep.
+{
+  const p6 = require('node:path'), h6 = require('./harness.cjs'), a6 = require('node:assert/strict');
+  const c6 = h6.load(p6.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-13T14:44:00Z')}).ctx;
+  c6.tmv3_audit_ = () => {}; c6.tmv3_preInspectionRefreshOperatorView_ = () => ({status: 'OK'});
+  const seen = [];
+  c6.tmv3_preInspectionAutomationCycle_ = o => { seen.push(o.sweepStart === true ? 'START' : 'CONTINUE');
+    return seen.length === 1 ? {status: 'NO_ACTIVE_PREINSPECTION_SWEEP', processed: 0, writes: 0}
+      : {status: 'COMPLETE', processed: 3, writes: 1, results: [], sweep: {remaining: 0}}; };
+  const out = c6.tmv3_preInspectionContinueEligibleSweep();
+  a6.deepEqual(seen, ['CONTINUE', 'START']); a6.equal(out.writes, 1);
+  console.log('PASS: follow-on with no unfinished sweep starts a fresh one');
+}
