@@ -46,6 +46,8 @@ var TMV3_PI_ONE_WRITE_PER_BATCH = false;
 // When a slot runs out of time, the rest of the sweep continues 1 minute later in a short follow-on
 // run (one-off trigger), repeated until every eligible event is done. Max 12 follow-ons a day.
 var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
+// Requested By = the employee who created the event; the calendar owner only as a fallback.
+var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -1536,6 +1538,12 @@ function tmv3_piAssertRequestedByPlan_(plan, record) {
     throw new Error(owner.blocker || 'PI_REQUESTED_BY_OWNER_UNVERIFIED_NO_WRITE');
   if (type !== 'employee' || !tmv3_piPositiveId_(rawId || '') || !Number.isSafeInteger(id) || id <= 0)
     throw new Error('PI_EXPECTED_REQUESTED_BY_EMPLOYEE_NOT_PROVEN_NO_WRITE');
+  // Operator rule 2026-11-13: Requested By is the employee who created the event. The calendar
+  // owner is used only when the creator is not a (unique) Striven employee.
+  if (TMV3_PI_REQUESTED_BY_CREATOR_FIRST === true && creatorId) {
+    if (id !== creatorId) throw new Error('PI_REQUESTED_BY_MUST_BE_EVENT_CREATOR_NO_WRITE');
+    return true;
+  }
   if (id !== owner.employeeId && id !== creatorId)
     throw new Error('PI_REQUESTED_BY_MUST_MATCH_VERIFIED_EVENT_OWNER_NO_WRITE');
   return true;
@@ -3348,6 +3356,13 @@ function tmv3_piDryRunRecord_(record, nowValue) {
     return h ? {status:'HELD',mode:h.mode} : {status:'NONE'};
   });
   stage('OWNER_REQUESTED_BY', function() { return tmv3_piVerifiedOwnerEmployee_(record); });
+  stage('CREATOR_REQUESTED_BY', function() {
+    const id = tmv3_piCreatorEmployeeId_(record);
+    const emp = id ? (tmv3_employeeDirectory_() || []).filter(function(e) { return Number(e.id) === id; })[0] : null;
+    return id ? {status:'MATCHED',employeeId:id,employeeName:emp && emp.name || '',creator:record.creator || record.organizer || '',
+      usedForRequestedBy:TMV3_PI_REQUESTED_BY_CREATOR_FIRST === true} :
+      {status:'NOT_AN_EMPLOYEE',creator:record.creator || record.organizer || '',fallback:'CALENDAR_OWNER'};
+  });
   const assessment = stage('MISSING_DETAILS', function() { return tmv3_preInspectionMissingDetailAssessment_(record); });
   stage('NOTIFICATION_DECISION', function() {
     if (authoritative.status !== 'AUTHORITATIVE') return {status:'NONAUTHORITATIVE_SOURCE_NO_SEND',send:false};

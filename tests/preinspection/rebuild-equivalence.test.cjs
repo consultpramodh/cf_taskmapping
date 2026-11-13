@@ -24,7 +24,7 @@ function check(name, fn) {
   checks++;
   try { fn(); } catch (e) { failures.push(name + ': ' + String(e && e.message || e).slice(0, 600)); }
 }
-const BASELINE_RULES = t => t.replace(/^var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;/m, 'var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = false;').replace(/^var TMV3_PI_ONE_WRITE_PER_BATCH = false;/m, 'var TMV3_PI_ONE_WRITE_PER_BATCH = true;').replace(/^var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;/m, 'var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = false;').replace(/^var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;/m, 'var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = false;')
+const BASELINE_RULES = t => t.replace(/^var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;/m, 'var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = false;').replace(/^var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;/m, 'var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = false;').replace(/^var TMV3_PI_ONE_WRITE_PER_BATCH = false;/m, 'var TMV3_PI_ONE_WRITE_PER_BATCH = true;').replace(/^var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;/m, 'var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = false;').replace(/^var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;/m, 'var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = false;')
   .replace(/^var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;/m, 'var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = false;')
   .replace(/^var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = true;/m, 'var TMV3_PI_EPHEMERAL_STATE_IN_CACHE = false;');
 const CLOSE = (f, t) => f === '30_PreInspection.gs' ? BASELINE_RULES(t.replace(/^var TMV3_PI_CLEANED_RELEASE_APPROVED = true;/m, 'var TMV3_PI_CLEANED_RELEASE_APPROVED = false;')) : t;

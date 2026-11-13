@@ -67,3 +67,20 @@ assert.equal(payload({nested:[{fieldId:854,value:'private'}]},'PATCH').decision,
   require('node:assert/strict').equal(later.status, 'GRACE_PERIOD', 'normal grace kept when the visit is well after it');
   console.log('PASS: grace period never runs past the appointment');
 }
+
+// Requested By = the employee who created the event (Steve Trevor), not the calendar owner (Stephen).
+{
+  const p4 = require('node:path'), h4 = require('./harness.cjs'), a4 = require('node:assert/strict');
+  const e4 = h4.load(p4.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-13T14:30:00Z')});
+  const c4 = e4.ctx;
+  c4.tmv3_piVerifiedOwnerEmployee_ = () => ({status: 'MATCHED', employeeId: 15});
+  c4.tmv3_piCreatorEmployeeId_ = () => 42;
+  const rec = {organizer: 'steve@classicfireplace.ca', creator: 'steve@classicfireplace.ca'};
+  a4.throws(() => c4.tmv3_piAssertRequestedByPlan_({expectedRequestedByType: 'employee', expectedRequestedById: '15'}, rec),
+    /PI_REQUESTED_BY_MUST_BE_EVENT_CREATOR_NO_WRITE/, 'owner refused when the creator is an employee');
+  a4.equal(c4.tmv3_piAssertRequestedByPlan_({expectedRequestedByType: 'employee', expectedRequestedById: '42'}, rec), true);
+  c4.tmv3_piCreatorEmployeeId_ = () => null;
+  a4.equal(c4.tmv3_piAssertRequestedByPlan_({expectedRequestedByType: 'employee', expectedRequestedById: '15'}, rec), true,
+    'owner is the fallback when the creator is not an employee');
+  console.log('PASS: Requested By is the event creator; owner only as fallback');
+}
