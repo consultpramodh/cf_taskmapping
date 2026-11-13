@@ -15,6 +15,8 @@
 //   piTest_WRITE_FixEvent()           WRITES: reconciles that one event now (same safety checks as the slots)
 //   piTest_PreviewInstallNotices()    READ-ONLY: Install events that would get the Install notice, and why
 //   piTest_SendInstallNoticeTest()    sends those Install notices to Pramodh only, TEST subject
+//   piTest_PreviewMissingLinks()      READ-ONLY: events in all 4 workflows with no Striven Task link
+//   piTest_SendMissingLinksNow()      sends that list to Pramodh now (same email as the daily 13:00 one)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -732,5 +734,21 @@ function piTest_SendInstallNoticeTest() {
   });
   Logger.log('PI_TEST_INSTALL_NOTICES=' + JSON.stringify({to:to, count:sent.length, emails:sent}));
   return sent;
+}
+
+/** READ-ONLY: upcoming events across all four workflows that have no Striven Task link. */
+function piTest_PreviewMissingLinks() {
+  const scan = tmv3_missingLinksScan_();
+  scan.rows.forEach(function(r) { Logger.log('PI_MISSING_LINK ' + r.vertical + ' | ' + Utilities.formatDate(r.start, TMV3_TIMEZONE, 'EEE MMM d h:mm a') +
+    ' | ' + r.title + (r.calendar ? ' | ' + r.calendar : '')); });
+  Logger.log('PI_MISSING_LINKS_SUMMARY=' + JSON.stringify({count:scan.rows.length, unreadable:scan.unreadable}));
+  return scan;
+}
+
+/** Sends the missing-links email to Pramodh now (only recipient), even if today's was already sent. */
+function piTest_SendMissingLinksNow() {
+  const r = tmv3_sendMissingLinksDigest_(true);
+  Logger.log('PI_MISSING_LINKS_SENT=' + JSON.stringify(r));
+  return r;
 }
 

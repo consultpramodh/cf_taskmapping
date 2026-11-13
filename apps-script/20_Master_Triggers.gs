@@ -59,7 +59,10 @@ function tmv3_allVerticalAutomationTick() {
 function tmv3_scheduledSheetRefresh() {
   const hour=Number(Utilities.formatDate(new Date(),TMV3_TIMEZONE,'H'));
   if([8,13,17].indexOf(hour)<0)return {status:'OUTSIDE_STANDARD_SLOTS'};
-  return tmv3_refreshAutomationSheets();
+  const result=tmv3_refreshAutomationSheets();
+  // Daily missing-links digest (operator only) after the morning slots have run.
+  if(hour===13){try{result.linksDigest=tmv3_sendMissingLinksDigest_(false);}catch(err){result.linksDigest={status:'ATTENTION',error:String(err&&err.message||err).slice(0,200)};}}
+  return result;
 }
 
 // Original: 60_Automation; Function: tmv3_standardDailySchedule_

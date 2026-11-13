@@ -45,3 +45,5 @@ jobs:
         run: node tests/vertical/install-follow-on.test.cjs
       - name: Workflow branding and Install notice
         run: node tests/vertical/notifications.test.cjs
+      - name: Missing-links digest (operator only)
+        run: node tests/vertical/missing-links-digest.test.cjs

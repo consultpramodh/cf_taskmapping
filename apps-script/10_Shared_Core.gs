@@ -16157,6 +16157,96 @@ function tmv3_brandNotification_(vertical, email) {
   return Object.assign({}, email, {subject:tmv3_brandSubject_(vertical, email.subject), htmlBody:html});
 }
 
+// Daily "missing Striven links" digest across all four workflows, to the operator ONLY
+// (operator rule 2026-11-13). Read-only: lists upcoming customer events whose description has
+// no Striven Task link. Sent once a day from the 13:00 sheet refresh, weekdays only.
+var TMV3_LINKS_DIGEST_ENABLED = true;
+const TMV3_LINKS_DIGEST_TO = 'pramodh@classicfireplace.ca';
+const TMV3_LINKS_DIGEST_DAYS = 14;
+
+/** Upcoming events (today .. +14 days) with no Striven Task link, per workflow. Never writes. */
+function tmv3_missingLinksScan_() {
+  const from = new Date(); from.setHours(0, 0, 0, 0);
+  const to = new Date(from); to.setDate(to.getDate() + TMV3_LINKS_DIGEST_DAYS);
+  const now = Date.now(), out = {rows:[], unreadable:[]};
+  ['PreInspection', 'Install', 'Delivery', 'Service'].forEach(function(v) {
+    const cfg = TMV3.VERTICALS[v];
+    // Pre-Inspection: CF Preinspects only (the source of truth); others: their own calendars.
+    const cals = v === 'PreInspection' ? [{calendarId:cfg.primaryCalendarId, calendarName:'CF Preinspects', role:'PRIMARY_SHARED'}]
+      : tmv3_verticalCalendars_(v, cfg);
+    cals.forEach(function(calCfg) {
+      let cal = null; try { cal = CalendarApp.getCalendarById(calCfg.calendarId); } catch (e) {}
+      if (!cal) { out.unreadable.push(v + ': ' + (calCfg.calendarName || calCfg.technician || calCfg.calendarId)); return; }
+      cal.getEvents(from, to).forEach(function(ev) {
+        if (ev.isAllDayEvent && ev.isAllDayEvent()) return;
+        if (ev.getEndTime().getTime() < now) return;
+        const desc = String(ev.getDescription() || '');
+        if (/TaskID=\d+/i.test(desc)) return;
+        const title = String(ev.getTitle() || ''), loc = String(ev.getLocation() || '');
+        // Customer appointments only: needs an address, a phone or a customer number.
+        if (!loc && !/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/.test(title + ' ' + desc) && !/\b\d{5}\b/.test(title)) return;
+        if (/\b(?:meeting|do not book|lunch|holiday|vacation|off)\b/i.test(title)) return;
+        out.rows.push({vertical:v, calendar:calCfg.calendarName || calCfg.technician || '', title:title,
+          start:ev.getStartTime(), location:loc, url:tmv3_calendarEventUrl_(ev.getId(), calCfg.calendarId)});
+      });
+    });
+  });
+  out.rows.sort(function(a, b) { return a.start - b.start; });
+  return out;
+}
+
+/** The digest email (standard layout; each row carries its workflow label). */
+function tmv3_missingLinksDigestEmail_(scan) {
+  const esc = tmv3_calendarHtmlEscape_;
+  const fmt = function(d) { return Utilities.formatDate(d, TMV3_TIMEZONE, 'EEE MMM d · h:mm a'); };
+  const counts = {};
+  scan.rows.forEach(function(r) { counts[r.vertical] = (counts[r.vertical] || 0) + 1; });
+  const summary = Object.keys(counts).map(function(v) { return TMV3_NOTIFICATION_BRANDS[v].label + ' ' + counts[v]; }).join(' · ');
+  const rows = scan.rows.map(function(r) {
+    const b = TMV3_NOTIFICATION_BRANDS[r.vertical];
+    return '<tr><td valign="top" style="padding:10px;border:1px solid #dddddd;"><span style="display:inline-block;background:' + b.color +
+      ';color:#fff;font-size:11px;font-weight:700;padding:2px 6px;border-radius:3px;">' + b.label + '</span>' +
+      (r.calendar && r.vertical === 'Service' ? '<br><span style="font-size:12px;color:#666;">' + esc(r.calendar) + '</span>' : '') +
+      '</td><td valign="top" style="padding:10px;border:1px solid #dddddd;white-space:nowrap;">' + esc(fmt(r.start)) +
+      '</td><td valign="top" style="padding:10px;border:1px solid #dddddd;"><a href="' + esc(r.url) + '">' + esc(r.title || '(untitled)') + '</a>' +
+      (r.location ? '<br><span style="font-size:12px;color:#666;">' + esc(r.location) + '</span>' : '') + '</td></tr>';
+  }).join('');
+  const html = '<!doctype html><html lang="en"><body style="margin:0;padding:0;background:#f4f3f1;font-family:Arial,Helvetica,sans-serif;color:#222;">' +
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
+    '<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;">' +
+    '<tr><td style="background:#202020;border-top:4px solid #202020;padding:18px 24px;">' +
+      '<div style="font-size:18px;font-weight:700;color:#ffffff;">Events missing Striven links</div>' +
+      '<div style="font-size:12px;color:#aaaaaa;margin-top:3px;">Classic Fireplace &amp; BBQ Store · next ' + TMV3_LINKS_DIGEST_DAYS + ' days · ' + esc(summary) + '</div></td></tr>' +
+    '<tr><td style="padding:18px 24px 8px;"><div style="font-size:12px;color:#666;font-style:italic;">Automated daily check. Sent only to you. Nothing was changed.</div></td></tr>' +
+    '<tr><td style="padding:0 24px 20px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #dddddd;font-size:13px;">' +
+      '<tr><td style="background:#f3f3f3;padding:10px;font-weight:700;border:1px solid #dddddd;">Workflow</td><td style="background:#f3f3f3;padding:10px;font-weight:700;border:1px solid #dddddd;">When</td>' +
+      '<td style="background:#f3f3f3;padding:10px;font-weight:700;border:1px solid #dddddd;">Event (opens the calendar)</td></tr>' + rows + '</table>' +
+      (scan.unreadable.length ? '<div style="font-size:12px;color:#B42318;margin-top:10px;">Could not read: ' + esc(scan.unreadable.join(', ')) + '</div>' : '') +
+    '</td></tr>' +
+    '<tr><td style="background:#202020;padding:12px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return {to:TMV3_LINKS_DIGEST_TO, subject:'[ALL WORKFLOWS] ' + scan.rows.length + ' event(s) missing Striven links | ' + summary,
+    body:scan.rows.map(function(r) { return '[' + TMV3_NOTIFICATION_BRANDS[r.vertical].label + '] ' + fmt(r.start) + ' — ' + r.title + ' — ' + r.url; }).join('\n'),
+    htmlBody:html};
+}
+
+/** Send the digest once a day (only to TMV3_LINKS_DIGEST_TO). force=true resends today. */
+function tmv3_sendMissingLinksDigest_(force) {
+  if (TMV3_LINKS_DIGEST_ENABLED !== true) return {status:'LINKS_DIGEST_OFF'};
+  const now = new Date();
+  if (!force && (now.getDay() === 0 || now.getDay() === 6)) return {status:'WEEKEND'};
+  const props = PropertiesService.getScriptProperties(), today = Utilities.formatDate(now, TMV3_TIMEZONE, 'yyyy-MM-dd');
+  if (!force && props.getProperty('TMV3_LINKS_DIGEST_LAST') === today) return {status:'ALREADY_SENT_TODAY'};
+  const scan = tmv3_missingLinksScan_();
+  props.setProperty('TMV3_LINKS_DIGEST_LAST', today);
+  if (!scan.rows.length && !scan.unreadable.length) return {status:'ALL_EVENTS_LINKED',sent:0};
+  const mail = tmv3_missingLinksDigestEmail_(scan);
+  if (mail.to !== 'pramodh@classicfireplace.ca') throw new Error('LINKS_DIGEST_RECIPIENT_CHANGED');
+  MailApp.sendEmail({to:mail.to, subject:mail.subject, body:mail.body, htmlBody:mail.htmlBody, name:'Classic Fireplace & BBQ Store'});
+  tmv3_audit_('SYSTEM', '', '', 'MISSING_LINKS_DIGEST', 'SENT', JSON.stringify({count:scan.rows.length, unreadable:scan.unreadable}));
+  return {status:'SENT',sent:1,count:scan.rows.length};
+}
+
 function tmv3_statusNotePut_(key, value) {
   try { CacheService.getScriptCache().put(key, String(value || ''), 21600); } catch (ignored) {}
 }

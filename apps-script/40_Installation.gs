@@ -261,7 +261,15 @@ function tmv3_installFreshOrderStatus_(record) {
 function tmv3_installNoticeAssessment_(record) {
   const missing = [];
   let order = null;
-  if (!tmv3_clean_(record.orderNumber)) {
+  // Sales Orders are 6 digits. A 5-digit number (e.g. "#59298") is a customer #, not an SO.
+  // Also read "SO585380-…" / "SO 585380" written straight after other text in the title or notes.
+  let so = String(tmv3_clean_(record.orderNumber));
+  if (!/^\d{6}$/.test(so)) {
+    const m = /SO\s*#?\s*(\d{6})(?!\d)/.exec(String(record.title || '') + ' ' + String(record.descriptionClean || record.rawDescription || ''));
+    so = m ? m[1] : '';
+  }
+  record = Object.assign({}, record, {orderNumber:so});
+  if (!so) {
     missing.push({code:'SALES_ORDER',field:'Sales Order',message:'Sales Order # missing',now:'Sales Order # missing',should:'Sales Order # of the Approved order'});
   } else {
     order = tmv3_installFreshOrderStatus_(record);
@@ -278,7 +286,9 @@ function tmv3_installNoticeAssessment_(record) {
         now:'SO #' + (order.number || '?') + ' — not found',should:'The correct Sales Order #'});
     }
   }
-  if (!tmv3_clean_(record.location)) {
+  const streetInNotes = /\b\d{1,6}\s+[A-Za-z][\w'.-]*(?:\s+[A-Za-z][\w'.-]*){0,3}\s+(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Cres|Crescent|Blvd|Boulevard|Ct|Court|Ln|Lane|Way|Pl|Place|Trail|Terrace|Circle|Cir|Pkwy|Parkway|Gate|Hwy|Highway|Line|Sideroad)\b/i
+    .test(String(record.descriptionClean || record.rawDescription || ''));
+  if (!tmv3_clean_(record.location) && !streetInNotes) {
     missing.push({code:'LOCATION',field:'Location',message:'Job-site address missing',now:'Location missing',should:'Full Job-Site Address'});
   }
   const creatorEmail = tmv3_preInspectionCreatorEmail_(record);

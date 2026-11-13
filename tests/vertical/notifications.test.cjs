@@ -44,3 +44,18 @@ assert.equal(JSON.stringify(a.missing.map(m => m.code)), JSON.stringify(['SALES_
 // Off by default.
 assert.equal(c.tmv3_sendInstallNotices_('T').status, 'INSTALL_NOTICES_OFF');
 console.log('PASS: workflow branding on all four; Install notice standard and dynamic (SO not Approved)');
+
+// Parsing from the 2026-11-13 preview: "SO585380-" glued to text is an SO; "#59298" (5 digits) is not.
+{
+  const seen = [];
+  c.tmv3_fetchJson_ = (url, o) => { seen.push(o && o.payload); return /\/search$/.test(url) ? {Data: [{Id: 7, Number: '585380'}], TotalCount: 1} : {Id: 7, Status: {Id: 22, Name: 'Approved'}}; };
+  const glued = Object.assign({}, record, {orderNumber: '', title: 'Impact RenovationsSO585380-H3BasementRe&Re-905-447-3490'});
+  assert.equal(c.tmv3_installNoticeAssessment_(glued).shouldNotify, false);
+  assert.match(String(seen[0]), /"Number":"585380"/);
+  c.tmv3_fetchJson_ = () => { throw new Error('no Striven read for a customer #'); };
+  const cust = Object.assign({}, record, {orderNumber: '59298', title: '#59298-Nick Giardina:(416) 500-4002'});
+  assert.equal(JSON.stringify(c.tmv3_installNoticeAssessment_(cust).missing.map(m => m.code)), JSON.stringify(['SALES_ORDER']));
+  const addrInNotes = Object.assign({}, record, {orderNumber: '', location: '', descriptionClean: 'Site: 12 Maple Grove Ave, Toronto'});
+  assert.equal(JSON.stringify(c.tmv3_installNoticeAssessment_(addrInNotes).missing.map(m => m.code)), JSON.stringify(['SALES_ORDER']));
+  console.log('PASS: SO parsing (glued SO#, 5-digit customer #) and address in notes');
+}
