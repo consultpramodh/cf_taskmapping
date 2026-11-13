@@ -10,6 +10,8 @@
 //   piTest_LastState()                READ-ONLY: last run result and pending queue
 //   piTest_PropertyInventory()        READ-ONLY: Script Properties as KEEP / JUNK / OTHER
 //   piTest_WRITE_CleanupProperties()  deletes JUNK properties only
+//   piTest_CheckEvent()               READ-ONLY: why one event (settings.eventId) has or lacks Task links
+//   piTest_WRITE_FixEvent()           WRITES: reconciles that one event now (same safety checks as the slots)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -21,7 +23,9 @@ function piTest_settings_() {
       slot: '13:00',      // label only; all three slots run the same code
       fromStart: true     // true: evaluate every event; false: continue the real saved sweep position
     },
-    emailTo: 'pramodh@classicfireplace.ca'  // test emails go ONLY here
+    emailTo: 'pramodh@classicfireplace.ca',  // test emails go ONLY here
+    // One event for piTest_CheckEvent / piTest_WRITE_FixEvent (Calendar event ID, with or without @google.com).
+    eventId: '1c5o71kgartm6q3j1ooj43d12d@google.com'   // 63267 James & Nadia Nickelo, Nov 13
   };
 }
 
@@ -545,4 +549,59 @@ function piTest_EndToEndCheck() {
   rows.forEach(function(r) { count[r.status]++; Logger.log('PI_E2E ' + r.status + ' | ' + r.area + ' | ' + r.detail + (r.status !== 'PASS' && r.fix ? ' | FIX: ' + r.fix : '')); });
   Logger.log('PI_E2E_SUMMARY=' + JSON.stringify(count));
   return {summary:count, rows:rows};
+}
+
+function piTest_eventId_() {
+  const id = String(piTest_settings_().eventId || '').trim();
+  if (!/^[a-z0-9_]+(@google\.com)?$/i.test(id)) throw new Error('PI_TEST_EVENT_ID_INVALID: ' + id);
+  return /@google\.com$/i.test(id) ? id : id + '@google.com';
+}
+
+/** READ-ONLY: is the event on CF Preinspects, is it in the queue, and what would the automation do. */
+function piTest_CheckEvent() {
+  const id = piTest_eventId_();
+  const cfg = TMV3.VERTICALS.PreInspection;
+  const out = {eventId:id};
+  const shared = CalendarApp.getCalendarById(cfg.primaryCalendarId);
+  const ev = shared && shared.getEventById(id);
+  out.onCfPreinspects = !!ev;
+  if (ev) {
+    out.title = ev.getTitle(); out.start = ev.getStartTime().toISOString();
+    out.hasTaskLink = /TaskID=\d+/.test(ev.getDescription() || '');
+  } else {
+    const stephen = CalendarApp.getCalendarById((cfg.secondaryCalendarIds || [])[0]);
+    const s2 = stephen && stephen.getEventById(id);
+    if (s2) { out.title = s2.getTitle(); out.start = s2.getStartTime().toISOString(); }
+    out.why = 'CF Preinspects is not a guest: automation only emails the booker; no Task or links until it is added.';
+  }
+  let state = null; try { state = JSON.parse(PropertiesService.getScriptProperties().getProperty('TMV3_PI_SWEEP_STATE') || 'null'); } catch (e) {}
+  out.sweep = state ? {status:state.status, remaining:state.remaining, total:state.total} : null;
+  out.inPendingQueue = (piTest_json_(PropertiesService.getScriptProperties().getProperty('TMV3_PI_PENDING_EVENTS')) || []).indexOf(id) >= 0;
+  if (ev) {
+    try { out.dryRun = tmv3_preInspectionDryRun(id); } catch (e) { out.dryRunError = String(e && e.message || e).slice(0, 300); }
+  }
+  Logger.log('PI_TEST_CHECK_EVENT=' + JSON.stringify(out));
+  return out;
+}
+
+/** WRITES: reconcile only settings.eventId now — create/link/update its Task with the slot's safety checks.
+ * Missing-details emails and failure alerts are not sent from this run. */
+function piTest_WRITE_FixEvent() {
+  const id = piTest_eventId_();
+  const saved = {send:tmv3_preInspectionSendMissingDetails_, alert:tmv3_preInspectionFailureAlert_};
+  let r;
+  try {
+    tmv3_preInspectionSendMissingDetails_ = function() { return {status:'SUPPRESSED_BY_OPERATOR_FIX',sent:0}; };
+    tmv3_preInspectionFailureAlert_ = function() { return {status:'SUPPRESSED_BY_OPERATOR_FIX',sent:0}; };
+    r = tmv3_preInspectionAutomationCycle_({force:true, eventId:id, reason:'OPERATOR_FIX_EVENT'});
+  } finally {
+    tmv3_preInspectionSendMissingDetails_ = saved.send; tmv3_preInspectionFailureAlert_ = saved.alert;
+  }
+  const one = (r.results || [])[0] || {};
+  const out = {eventId:id, status:r.status, writes:r.writes, plan:one.plan || '', taskId:one.taskId || '',
+    blocker:one.blocker || '', error:one.error || r.error || '', recreate:one.recreateAuthorized || ''};
+  if (!r.results || !r.results.length) out.note = 'Event not found on CF Preinspects (or before today): nothing reconciled.';
+  try { tmv3_refreshAutomationSheetsAfter_(Date.now() - 600000); } catch (ignored) {}
+  Logger.log('PI_TEST_FIX_EVENT=' + JSON.stringify(out));
+  return out;
 }
