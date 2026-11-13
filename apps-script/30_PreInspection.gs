@@ -48,6 +48,8 @@ var TMV3_PI_ONE_WRITE_PER_BATCH = false;
 var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
 // Requested By = the employee who created the event; the calendar owner only as a fallback.
 var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
+// One empty line between the event notes and "-----Striven Links-----" (operator rule 2026-11-13).
+var TMV3_PI_BLANK_LINE_BEFORE_LINKS = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -1258,7 +1260,9 @@ function tmv3_preInspectionAuthoredMarkup_(description) {
   const offset = tmv3_managedCalendarBlockStart_(raw);
   if (offset >= 0) {
     raw = raw.slice(0, offset);
-    raw = raw.replace(/(?:<br\s*\/?>|\r?\n)\s*$/i, ''); // only the separator before our footer
+    raw = TMV3_PI_BLANK_LINE_BEFORE_LINKS === true
+      ? raw.replace(/(?:(?:<br\s*\/?>|\r?\n)\s*)+$/i, '') // whole separator before our footer (re-added below)
+      : raw.replace(/(?:<br\s*\/?>|\r?\n)\s*$/i, ''); // only the separator before our footer
   }
   if (/<[a-z][^>]*>/i.test(raw)) return raw.replace(/\s+$/, '');
   // Hyperlinks need markup: escape plain text and map each newline to one <br>.
@@ -1277,7 +1281,8 @@ function tmv3_preInspectionClickableManagedDescription_(existingDescription, pla
   const authored = tmv3_preInspectionAuthoredMarkup_(before);
   const header = tmv3_calendarHtmlEscape_(TMV3_FINAL_LINK_HEADING);
   const footer = header + (links.length ? '<br>' + links.map(tmv3_preInspectionHtmlLink_).join('<br>') : '');
-  const out = authored + (authored ? '<br>' : '') + footer;
+  const separator = TMV3_PI_BLANK_LINE_BEFORE_LINKS === true ? '<br><br>' : '<br>';
+  const out = authored + (authored ? separator : '') + footer;
   tmv3_assertPreInspectionLinkDescription_(out, plan);
   return {description:out,status:out === before ? 'LINKS_ALREADY_CANONICAL' : 'LINKS_REQUIRE_UPDATE',changed:out !== before};
 }

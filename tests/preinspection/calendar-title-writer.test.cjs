@@ -47,3 +47,19 @@ assert.equal(r.error, '');
 assert.match(r.shared.description, /^45176 - Doug Poad - 416-710-0088/, 'previous title recovered from organizer copy');
 assert.equal(r.shared.title, '45176 - Doug Poad - (416) 710-0088');
 console.log('PASS: organizer-first Calendar write, propagation skip, previous-title recovery');
+
+// One empty line before "-----Striven Links-----", and re-running never adds more.
+{
+  const p5 = require('node:path'), h5 = require('./harness.cjs'), a5 = require('node:assert/strict');
+  const c5 = h5.load(p5.resolve(__dirname, '..', '..', 'apps-script')).ctx;
+  const plan = {links: [{key: 'TASK', url: 'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=1', label: 'Task #1 – A'}]};
+  c5.tmv3_assertPreInspectionLinkDescription_ = () => true;
+  const once = c5.tmv3_preInspectionClickableManagedDescription_('Notes line', plan).description;
+  a5.match(once, /^Notes line<br><br>-----Striven Links-----<br><a /);
+  const twice = c5.tmv3_preInspectionClickableManagedDescription_(once, plan);
+  a5.equal(twice.description, once); a5.equal(twice.changed, false);
+  const oldFormat = 'Notes line<br>-----Striven Links-----<br><a href="https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=1">Task #1 – A</a>';
+  a5.equal(c5.tmv3_preInspectionClickableManagedDescription_(oldFormat, plan).description, once, 'old single-break events get the blank line');
+  a5.match(c5.tmv3_preInspectionClickableManagedDescription_('', plan).description, /^-----Striven Links-----/);
+  console.log('PASS: one empty line before Striven Links, stable on re-run');
+}
