@@ -601,6 +601,13 @@ function piTest_WRITE_FixEvent() {
   const out = {eventId:id, status:r.status, writes:r.writes, plan:one.plan || '', taskId:one.taskId || '',
     blocker:one.blocker || '', error:one.error || r.error || '', recreate:one.recreateAuthorized || ''};
   if (!r.results || !r.results.length) out.note = 'Event not found on CF Preinspects (or before today): nothing reconciled.';
+  // A CREATE plan has no Task ID until it runs: read the link the run wrote back onto the event.
+  try {
+    const ev = CalendarApp.getCalendarById(TMV3.VERTICALS.PreInspection.primaryCalendarId).getEventById(id);
+    const m = ev && /TaskID=(\d+)/.exec(ev.getDescription() || '');
+    out.linkedTaskOnEvent = m ? m[1] : '';
+    if (!out.taskId && m) out.taskId = m[1];
+  } catch (ignored) {}
   try { tmv3_refreshAutomationSheetsAfter_(Date.now() - 600000); } catch (ignored) {}
   Logger.log('PI_TEST_FIX_EVENT=' + JSON.stringify(out));
   return out;
