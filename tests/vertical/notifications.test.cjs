@@ -59,3 +59,11 @@ console.log('PASS: workflow branding on all four; Install notice standard and dy
   assert.equal(JSON.stringify(c.tmv3_installNoticeAssessment_(addrInNotes).missing.map(m => m.code)), JSON.stringify(['SALES_ORDER']));
   console.log('PASS: SO parsing (glued SO#, 5-digit customer #) and address in notes');
 }
+
+// Special project (Times - Chatsworth): never asked for an SO #.
+{
+  c.tmv3_fetchJson_ = () => { throw new Error('no read'); };
+  const sp = Object.assign({}, record, {orderNumber: '', title: 'Times - Chatsworth ', location: ''});
+  assert.equal(JSON.stringify(c.tmv3_installNoticeAssessment_(sp).missing.map(m => m.code)), JSON.stringify(['LOCATION']));
+  console.log('PASS: special project skips the SO # item');
+}

@@ -235,6 +235,9 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
 var TMV3_INSTALL_NOTICE_ENABLED = false;   // ON after the TEST email is approved
 const TMV3_INSTALL_SO_NOT_APPROVED = Object.freeze({'18':'incomplete','19':'quoted','20':'pending approval'});
 const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 31;
+// One-off special projects: booked without a Sales Order on purpose (operator 2026-11-13).
+// Their Install notice never asks for an SO #.
+const TMV3_INSTALL_SPECIAL_PROJECTS = Object.freeze([/^\s*Times\s*-\s*Chatsworth\b/i]);
 
 /** Fresh Striven status of the SO on an Install event: {status:'FOUND', orderId, number, statusId, statusName} or a reason. */
 function tmv3_installFreshOrderStatus_(record) {
@@ -269,7 +272,10 @@ function tmv3_installNoticeAssessment_(record) {
     so = m ? m[1] : '';
   }
   record = Object.assign({}, record, {orderNumber:so});
-  if (!so) {
+  const special = TMV3_INSTALL_SPECIAL_PROJECTS.some(function(rx) { return rx.test(String(record.title || '')); });
+  if (!so && special) {
+    // Special project: no Sales Order by design.
+  } else if (!so) {
     missing.push({code:'SALES_ORDER',field:'Sales Order',message:'Sales Order # missing',now:'Sales Order # missing',should:'Sales Order # of the Approved order'});
   } else {
     order = tmv3_installFreshOrderStatus_(record);

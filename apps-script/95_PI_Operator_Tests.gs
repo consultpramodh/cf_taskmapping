@@ -17,6 +17,7 @@
 //   piTest_SendInstallNoticeTest()    sends those Install notices to Pramodh only, TEST subject
 //   piTest_PreviewMissingLinks()      READ-ONLY: events in all 4 workflows with no Striven Task link
 //   piTest_SendMissingLinksNow()      sends that list to Pramodh now (same email as the daily 13:00 one)
+//   piTest_WRITE_CreateSpecialInstallTasks()  one Installation Task per special-project event (preview unless write:true)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -750,5 +751,77 @@ function piTest_SendMissingLinksNow() {
   const r = tmv3_sendMissingLinksDigest_(true);
   Logger.log('PI_MISSING_LINKS_SENT=' + JSON.stringify(r));
   return r;
+}
+
+/** Special-project Installation Tasks (no Sales Order): one Task per matching Install event,
+ * then the Task link goes on that event. Settings below; previews unless write is true.
+ * Skips any event that already has a Striven Task link (safe to re-run). */
+function piTest_specialInstallSettings_() {
+  return {
+    titleStartsWith: 'Times - Chatsworth',
+    customerId: 61681,                 // 33 Chatsworth Limited Partnership
+    templateTaskId: 19491,             // an existing Installation Task: copies its Task Type only
+    lookaheadDays: 120,
+    write: false                       // set true to create the Tasks and link them
+  };
+}
+
+function piTest_WRITE_CreateSpecialInstallTasks() {
+  const cfgS = piTest_specialInstallSettings_();
+  const cfg = TMV3.VERTICALS.Install, calId = cfg.calendarIds[0];
+  const cal = CalendarApp.getCalendarById(calId);
+  const from = new Date(); from.setHours(0, 0, 0, 0);
+  const to = new Date(from); to.setDate(to.getDate() + cfgS.lookaheadDays);
+  const events = cal.getEvents(from, to).filter(function(ev) {
+    return String(ev.getTitle() || '').trim().toLowerCase().indexOf(cfgS.titleStartsWith.toLowerCase()) === 0;
+  });
+  // Task Type from an existing Installation Task (never guessed).
+  const tpl = tmv3_fetchJson_(TMV3.API_BASE + '/v1/tasks/' + cfgS.templateTaskId, {method:'get'}) || {};
+  const type = tmv3_first_(tpl, ['Type','TaskType','type','taskType']) || {};
+  const typeId = Number(tmv3_first_(type, ['Id','id'])), typeName = String(tmv3_first_(type, ['Name','name']) || '');
+  if (!typeId || !/install/i.test(typeName)) throw new Error('TEMPLATE_IS_NOT_AN_INSTALLATION_TASK: ' + typeName);
+  const cust = tmv3_fetchJson_(TMV3.API_BASE + '/v1/customers/' + cfgS.customerId, {method:'get'}) || {};
+  if (Number(tmv3_first_(cust, ['Id','id'])) !== cfgS.customerId) throw new Error('CUSTOMER_NOT_FOUND: ' + cfgS.customerId);
+  const custName = String(tmv3_first_(cust, ['Name','name']) || '');
+  // Location only when the customer has exactly one in the cache.
+  const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(cfgS.customerId); });
+  const loc = locs.length === 1 ? locs[0] : null;
+  const out = [];
+  events.forEach(function(ev) {
+    const desc = String(ev.getDescription() || '');
+    const start = ev.getStartTime(), end = ev.getEndTime();
+    const row = {eventId:ev.getId(), title:ev.getTitle(), date:Utilities.formatDate(start, TMV3_TIMEZONE, 'yyyy-MM-dd')};
+    if (/TaskID=\d+/i.test(desc)) { row.status = 'ALREADY_LINKED'; out.push(row); return; }
+    const payload = {
+      Title: cfgS.titleStartsWith + ' - Special Project - ' + Utilities.formatDate(start, TMV3_TIMEZONE, 'MMM d, yyyy'),
+      Type: {Id:typeId, Name:typeName},
+      Description: 'One-off special project (no Sales Order). Calendar: ' + ev.getTitle(),
+      Budget: 0,
+      StartDateTime: tmv3_strivenTaskDateTime_(start),
+      DueDateTime: tmv3_strivenTaskDateTime_(end),
+      UseSubContractor: false,
+      Customer: {Id:cfgS.customerId, Number:String(cfgS.customerId), Name:custName}
+    };
+    if (loc) payload.Location = {Id:Number(loc['Location ID']), Name:String(loc['Name'] || loc['Location Name'] || '')};
+    row.payload = payload;
+    if (cfgS.write !== true) { row.status = 'PREVIEW_ONLY'; out.push(row); return; }
+    const json = tmv3_fetchJson_(TMV3.API_BASE + '/v2/tasks', {method:'post', contentType:'application/json', payload:JSON.stringify(payload)});
+    const taskId = Number(tmv3_extractCreatedTaskId_(json) || 0);
+    if (!taskId) { row.status = 'CREATE_NO_ID_CHECK_STRIVEN'; out.push(row); return; }
+    row.taskId = taskId;
+    tmv3_audit_('Install', ev.getId(), String(taskId), 'SPECIAL_PROJECT_TASK_CREATE', 'PASS', JSON.stringify({customer:cfgS.customerId, title:payload.Title}));
+    const url = 'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=' + taskId;
+    const label = 'Task #' + taskId + ' – ' + payload.Title;
+    const updated = tmv3_verticalClickableDescription_(desc, {vertical:'Install', links:[{key:'TASK', url:url, label:label}]});
+    ev.setDescription(updated);
+    row.linked = String(ev.getDescription() || '').indexOf('TaskID=' + taskId) >= 0;
+    row.status = row.linked ? 'CREATED_AND_LINKED' : 'CREATED_LINK_NOT_VERIFIED';
+    out.push(row);
+  });
+  Logger.log('PI_SPECIAL_INSTALL=' + JSON.stringify({customer:cfgS.customerId + ' ' + custName, taskType:typeId + ' ' + typeName,
+    location:loc ? loc['Location ID'] : 'none (customer has ' + locs.length + ')', write:cfgS.write === true, events:out.map(function(r) {
+      return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', payloadTitle:r.payload && r.payload.Title};
+    })}));
+  return out;
 }
 
