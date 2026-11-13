@@ -776,10 +776,10 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
     return String(ev.getTitle() || '').trim().toLowerCase().indexOf(cfgS.titleStartsWith.toLowerCase()) === 0;
   });
   // Task Type from an existing Installation Task (never guessed).
-  const tpl = tmv3_fetchJson_(TMV3.API_BASE + '/v1/tasks/' + cfgS.templateTaskId, {method:'get'}) || {};
-  const type = tmv3_first_(tpl, ['Type','TaskType','type','taskType']) || {};
-  const typeId = Number(tmv3_first_(type, ['Id','id'])), typeName = String(tmv3_first_(type, ['Name','name']) || '');
-  if (!typeId || !/install/i.test(typeName)) throw new Error('TEMPLATE_IS_NOT_AN_INSTALLATION_TASK: ' + typeName);
+  const tpl = tmv3_getTaskById_(cfgS.templateTaskId) || {};   // the same Task read the automation uses
+  const typeId = Number(tpl['Task Type ID'] || 0), typeName = String(tpl['Task Type'] || '');
+  if (!typeId || !/install/i.test(typeName))
+    throw new Error('TEMPLATE_IS_NOT_AN_INSTALLATION_TASK: Task ' + cfgS.templateTaskId + ' type ' + typeId + ' "' + typeName + '"');
   const cust = tmv3_fetchJson_(TMV3.API_BASE + '/v1/customers/' + cfgS.customerId, {method:'get'}) || {};
   if (Number(tmv3_first_(cust, ['Id','id'])) !== cfgS.customerId) throw new Error('CUSTOMER_NOT_FOUND: ' + cfgS.customerId);
   const custName = String(tmv3_first_(cust, ['Name','name']) || '');
