@@ -2,6 +2,7 @@
 // Never edit 00_Configuration or 30_PreInspection to test. Run from the editor (no arguments):
 //
 //   piTest_EndToEndCheck()            READ-ONLY: checks the whole live setup, PASS / WARN / FAIL per item
+//   piTest_TriggerAudit()             READ-ONLY: installed triggers vs schedule + did each slot run (last 3 days)
 //   piTest_SimulateSlot()             READ-ONLY: emulates the 08:00/13:00/17:00 trigger for all events
 //   piTest_PreviewNotices()           READ-ONLY: who would get a missing-details email now
 //   piTest_SendTestEmails()           sends next-slot missing-details emails to Pramodh only, TEST subject
@@ -612,3 +613,76 @@ function piTest_WRITE_FixEvent() {
   Logger.log('PI_TEST_FIX_EVENT=' + JSON.stringify(out));
   return out;
 }
+
+/** READ-ONLY trigger audit: (1) what is installed vs the standard schedule, (2) whether every
+ * workflow slot actually ran on each of the last 3 days and how it ended (from TM Audit). */
+function piTest_TriggerAudit() {
+  const schedule = tmv3_standardDailySchedule_();
+  const prefix = function(v) { return v === 'PreInspection' ? 'preInspection' : v.toLowerCase(); };
+  const expected = {};
+  schedule.verticals.forEach(function(v) {
+    schedule.hours.forEach(function(h) { expected['tmv3_' + prefix(v) + 'Check' + ('0' + h).slice(-2) + '00'] = {vertical:v, hour:h}; });
+  });
+  const installed = {};
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    const h = t.getHandlerFunction();
+    (installed[h] = installed[h] || []).push(String(t.getEventType()));
+  });
+  const rows = [];
+  Object.keys(expected).forEach(function(h) {
+    const n = (installed[h] || []).length;
+    rows.push({handler:h, kind:'SCHEDULED ' + expected[h].vertical + ' ' + expected[h].hour + ':00', installed:n,
+      functionExists:typeof globalThis[h] === 'function', status:n === 1 && typeof globalThis[h] === 'function' ? 'PASS' : 'FAIL'});
+  });
+  Object.keys(installed).filter(function(h) { return !expected[h]; }).forEach(function(h) {
+    const n = installed[h].length;
+    let kind = 'EXTRA', status = 'WARN';
+    if (h === 'tmv3_scheduledSheetRefresh') { kind = 'SHEET REFRESH 8/13/17'; status = n === 3 ? 'PASS' : 'WARN'; }
+    else if (h === 'tmv3_preInspectionContinueEligibleSweep' && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) {
+      kind = 'PI FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
+    }
+    rows.push({handler:h, kind:kind, installed:n, functionExists:typeof globalThis[h] === 'function', status:status});
+  });
+  rows.forEach(function(r) { Logger.log('PI_TRIGGER ' + r.status + ' | ' + r.handler + ' | ' + r.kind + ' | installed ' + r.installed +
+    (r.functionExists ? '' : ' | FUNCTION MISSING')); });
+
+  // Run history from TM Audit (slot result rows only).
+  const sh = tmv3_sheet_(TMV3.SHEETS.AUDIT);
+  const last = sh.getLastRow(), from = Math.max(2, last - 1500);
+  const data = sh.getRange(from, 1, last - from + 1, 7).getValues();
+  const days = [];
+  for (let i = 2; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i);
+    days.push(Utilities.formatDate(d, TMV3_TIMEZONE, 'yyyy-MM-dd')); }
+  const runs = {};
+  data.forEach(function(r) {
+    const action = String(r[4] || ''), vertical = String(r[1] || '');
+    if (action !== 'STANDARD_DAILY_SLOT' && action !== 'PREINSPECTION_SWEEP') return;
+    const at = r[0] instanceof Date ? r[0] : new Date(r[0]);
+    if (!isFinite(at.getTime())) return;
+    const day = Utilities.formatDate(at, TMV3_TIMEZONE, 'yyyy-MM-dd'), time = Utilities.formatDate(at, TMV3_TIMEZONE, 'HH:mm');
+    let slot = ''; try { slot = String(JSON.parse(r[6] || '{}').slot || ''); } catch (e) {}
+    const hour = /^\d\d:00$/.test(slot) ? Number(slot.slice(0, 2)) : Number(time.slice(0, 2));
+    const key = day + '|' + vertical + '|' + (/FOLLOW_ON|RECOVERY/.test(slot) ? 'FOLLOW_ON' : hour);
+    (runs[key] = runs[key] || []).push(time + ' ' + String(r[5] || ''));
+  });
+  const now = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd HH:mm');
+  const gaps = [];
+  days.forEach(function(day) {
+    schedule.verticals.forEach(function(v) {
+      const cells = schedule.hours.map(function(h) {
+        const due = day + ' ' + ('0' + h).slice(-2) + ':30' <= now;
+        const got = runs[day + '|' + v + '|' + h] || runs[day + '|' + v + '|' + (h - 1)] || [];
+        if (!got.length && due) gaps.push(day + ' ' + v + ' ' + h + ':00');
+        return h + ':00 ' + (got.length ? got.join(', ') : due ? 'NO RUN' : 'not yet');
+      });
+      const follow = runs[day + '|' + v + '|FOLLOW_ON'];
+      Logger.log('PI_SLOT_RUNS ' + day + ' | ' + v + ' | ' + cells.join(' | ') + (follow ? ' | follow-ons: ' + follow.join(', ') : ''));
+    });
+  });
+  const summary = {triggersPass:rows.filter(function(r) { return r.status === 'PASS'; }).length,
+    triggersWarnOrFail:rows.filter(function(r) { return r.status !== 'PASS'; }).map(function(r) { return r.handler + ' ' + r.status; }),
+    missedSlots:gaps};
+  Logger.log('PI_TRIGGER_AUDIT=' + JSON.stringify(summary));
+  return {triggers:rows, missedSlots:gaps, summary:summary};
+}
+
