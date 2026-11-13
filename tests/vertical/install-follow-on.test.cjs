@@ -51,6 +51,7 @@ c.tmv3_verticalProductionCycle_ = () => { calls++; return {status: 'LOCK_BUSY', 
 const svc = c.tmv3_runFullVerticalSweep_('Service');
 assert.equal(calls, 1); assert.equal(svc.continuation, 'DEFERRED_TO_NEXT_STANDARD_SLOT'); assert.equal(made.length, 0);
 // PreInspection never goes through the vertical sweep or its follow-ons.
-assert.equal(c.TMV3_VERTICAL_FOLLOW_ON.PreInspection, undefined);
-assert.equal(c.TMV3.OPERATIONS.verticalProductionVerticals.indexOf('PreInspection'), -1);
+const vm = require('node:vm');
+assert.equal(vm.runInContext('TMV3_VERTICAL_FOLLOW_ON.PreInspection', c), undefined);
+assert.equal(vm.runInContext("TMV3.OPERATIONS.verticalProductionVerticals.indexOf('PreInspection')", c), -1);
 console.log('PASS: Install retries the lock and finishes its sweep in follow-on runs; other workflows unchanged');
