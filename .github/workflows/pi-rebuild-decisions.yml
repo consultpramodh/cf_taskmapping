@@ -1,0 +1,49 @@
+name: Pre-Inspection rebuild checks
+on:
+  push:
+    branches: [preinspection]
+    paths:
+      - apps-script/**
+      - tests/preinspection/**
+      - tests/vertical/**
+      - .github/workflows/pi-rebuild-decisions.yml
+  pull_request:
+    branches: [main, preinspection]
+    paths:
+      - apps-script/**
+      - tests/preinspection/**
+      - tests/vertical/**
+      - .github/workflows/pi-rebuild-decisions.yml
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify Apps Script syntax
+        run: for f in apps-script/*.gs; do node --check < "$f" || exit 1; done
+      - name: Staged decision fixtures
+        run: node tests/preinspection/rebuild-decisions.test.cjs
+      - name: Sales Order pre-create guard
+        run: node tests/preinspection/order-guard.test.cjs
+      - name: Live-baseline equivalence, gate and safety checks
+        run: node tests/preinspection/rebuild-equivalence.test.cjs
+      - name: Calendar title writer (organizer-first)
+        run: node tests/preinspection/calendar-title-writer.test.cjs
+      - name: Slot simulation is read-only
+        run: node tests/preinspection/slot-simulation.test.cjs
+      - name: YES/NO visit confirmation links
+        run: node tests/preinspection/visit-confirmation.test.cjs
+      - name: Script Properties hygiene
+        run: node tests/preinspection/script-properties.test.cjs
+      - name: Install sweep follow-on runs
+        run: node tests/vertical/install-follow-on.test.cjs
+      - name: Workflow branding and Install notice
+        run: node tests/vertical/notifications.test.cjs
+      - name: Missing-links digest (operator only)
+        run: node tests/vertical/missing-links-digest.test.cjs
