@@ -43,3 +43,5 @@ jobs:
         run: node tests/preinspection/script-properties.test.cjs
       - name: Install sweep follow-on runs
         run: node tests/vertical/install-follow-on.test.cjs
+      - name: Workflow branding and Install notice
+        run: node tests/vertical/notifications.test.cjs

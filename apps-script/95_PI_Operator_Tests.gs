@@ -13,6 +13,8 @@
 //   piTest_WRITE_CleanupProperties()  deletes JUNK properties only
 //   piTest_CheckEvent()               READ-ONLY: why one event (settings.eventId) has or lacks Task links
 //   piTest_WRITE_FixEvent()           WRITES: reconciles that one event now (same safety checks as the slots)
+//   piTest_PreviewInstallNotices()    READ-ONLY: Install events that would get the Install notice, and why
+//   piTest_SendInstallNoticeTest()    sends those Install notices to Pramodh only, TEST subject
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -165,8 +167,9 @@ function piTest_SendTestEmails() {
   if (MailApp.getRemainingDailyQuota() < records.length + 1) throw new Error('PI_TEST_EMAIL_QUOTA_LOW');
   const sent = [];
   records.forEach(function(record) {
-    const email = tmv3_preInspectionMissingDetailEmailPreview_(Object.assign({}, record, {notificationFollowupNumber:0}));
+    let email = tmv3_preInspectionMissingDetailEmailPreview_(Object.assign({}, record, {notificationFollowupNumber:0}));
     if (!email) return;
+    email = tmv3_brandNotification_('PreInspection', email);
     const assessment = tmv3_preInspectionMissingDetailAssessment_(record);
     const message = {to:'pramodh@classicfireplace.ca',subject:'TEST ' + email.subject,
       body:'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; '),
@@ -194,7 +197,7 @@ function piTest_SendQuestionTest() {
   // Same rule as live: looks like a pre-inspection, CF Preinspects not a guest, not yet answered.
   const sent = (off.candidateRecords || []).filter(function(r) { return !tmv3_piVisitConfirmation_(r.eventId); }).map(function(record) {
     const r = Object.assign({}, record, {piOffSharedCandidate:true, notificationFollowupNumber:0});
-    const q = tmv3_piAddVisitQuestion_(tmv3_preInspectionMissingDetailEmailPreview_(r), r, true);
+    const q = tmv3_brandNotification_('PreInspection', tmv3_piAddVisitQuestion_(tmv3_preInspectionMissingDetailEmailPreview_(r), r, true));
     if (!q.questionAdded) throw new Error('PI_TEST_QUESTION_SECTION_NOT_ADDED');
     const message = {to:'pramodh@classicfireplace.ca',subject:'TEST ' + q.subject,
       body:'Please update the missing Pre-Inspection details.' + (q.bodySuffix || ''),htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'};
@@ -221,7 +224,7 @@ function piTest_propertyClass_(key, value, todayIso, upcoming) {
   const json = piTest_json_(value);
   // Records tied to one appointment: useful only while that appointment is still ahead.
   // upcoming = hashes of every event from yesterday on (CF Preinspects + Stephen); null = calendars unreadable, keep all.
-  const eventKey = /^TMV3_PI_(?:NOTIFICATION|QUESTION|ORIGIN|ASSIGNMENT_OVERRIDE)_([0-9a-f]{64})$/.exec(key);
+  const eventKey = /^TMV3_(?:PI_(?:NOTIFICATION|QUESTION|ORIGIN|ASSIGNMENT_OVERRIDE)|INSTALL_NOTICE)_([0-9a-f]{64})$/.exec(key);
   if (eventKey) {
     if (upcoming && !upcoming[eventKey[1]]) return {cls:'JUNK',why:'appointment is in the past'};
     return {cls:'KEEP',why:/NOTIFICATION|QUESTION/.test(key) ? 'stops repeat emails (appointment ahead)' : 'needed for an upcoming appointment'};
@@ -688,5 +691,46 @@ function piTest_TriggerAudit() {
     missedSlots:gaps};
   Logger.log('PI_TRIGGER_AUDIT=' + JSON.stringify(summary));
   return {triggers:rows, missedSlots:gaps, summary:summary};
+}
+
+/** READ-ONLY: which Install events would get the Install notice now, what is wrong, and the timing decision. */
+function piTest_PreviewInstallNotices() {
+  const props = PropertiesService.getScriptProperties();
+  const rows = tmv3_installNoticeRecords_().map(function(x) {
+    const r = x.record;
+    const row = {title:r.title, start:r.start, creator:tmv3_preInspectionCreatorEmail_(r), so:r.orderNumber || ''};
+    if (x.error) { row.status = 'SO_READ_FAILED'; row.error = x.error; return row; }
+    row.missing = x.assessment.missing.map(function(m) { return m.message; });
+    row.soStatus = x.assessment.order ? (x.assessment.order.statusName || x.assessment.order.status) : '';
+    if (!x.assessment.shouldNotify) { row.status = 'OK_NOTHING_TO_SEND'; return row; }
+    let state = null; try { state = JSON.parse(props.getProperty('TMV3_INSTALL_NOTICE_' + tmv3_hash_(r.eventId)) || 'null'); } catch (e) {}
+    const d = tmv3_preInspectionNotificationDecision_(r, state);
+    row.status = d.send ? 'WOULD_SEND' : d.status; row.followup = d.followupNumber || 0;
+    row.wouldGoTo = tmv3_piCreatorRecipients_(row.creator).join(',');
+    return row;
+  });
+  rows.filter(function(r) { return r.status !== 'OK_NOTHING_TO_SEND'; })
+    .forEach(function(r) { Logger.log('PI_INSTALL_NOTICE=' + JSON.stringify(r)); });
+  Logger.log('PI_INSTALL_NOTICE_SUMMARY=' + JSON.stringify({checked:rows.length,
+    wouldSend:rows.filter(function(r) { return r.status === 'WOULD_SEND'; }).length,
+    needAttention:rows.filter(function(r) { return r.missing && r.missing.length; }).length}));
+  return rows;
+}
+
+/** TEST: the Install notice for every install that has an issue, sent ONLY to Pramodh with TEST in the subject. */
+function piTest_SendInstallNoticeTest() {
+  const to = 'pramodh@classicfireplace.ca';
+  if (piTest_settings_().emailTo !== to) throw new Error('PI_TEST_RECIPIENT_CHANGED');
+  const list = tmv3_installNoticeRecords_().filter(function(x) { return !x.error && x.assessment.shouldNotify; }).slice(0, 10);
+  if (MailApp.getRemainingDailyQuota() < list.length + 1) throw new Error('PI_TEST_EMAIL_QUOTA_LOW');
+  const sent = list.map(function(x) {
+    const e = tmv3_installNoticeEmail_(x.record, x.assessment, 0);
+    const message = {to:to, subject:'TEST ' + e.subject, body:e.body, htmlBody:e.htmlBody, name:'Classic Fireplace & BBQ Store'};
+    if (message.to !== to || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
+    MailApp.sendEmail(message);
+    return {subject:message.subject, wouldGoTo:tmv3_piCreatorRecipients_(e.recipient).join(','), wouldCc:e.cc.join(',')};
+  });
+  Logger.log('PI_TEST_INSTALL_NOTICES=' + JSON.stringify({to:to, count:sent.length, emails:sent}));
+  return sent;
 }
 

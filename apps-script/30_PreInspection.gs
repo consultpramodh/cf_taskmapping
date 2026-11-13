@@ -50,6 +50,8 @@ var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
 var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
 // One empty line between the event notes and "-----Striven Links-----" (operator rule 2026-11-13).
 var TMV3_PI_BLANK_LINE_BEFORE_LINKS = true;
+// Subject "[PRE-INSPECTION]" + header label (shared TMV3_NOTIFICATION_BRANDS); added at send time.
+var TMV3_PI_VERTICAL_BRANDING = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
 var TMV3_PI_CREATOR_PARTNERS = {
   'steve@classicfireplace.ca': ['colleen@classicfireplace.ca'],
@@ -1926,11 +1928,12 @@ function tmv3_piSendMissingDetailsAfterRelease_(record) {
   const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
   props.setProperty(key, JSON.stringify(next));
   // YES/NO box only for bookings missing CF Preinspects; never on the shared calendar's own events.
-  const sendable = record.piVisitQuestion === true && record.piOffSharedCandidate === true &&
+  let sendable = record.piVisitQuestion === true && record.piOffSharedCandidate === true &&
     !tmv3_piVisitConfirmation_(record.eventId) ? tmv3_piAddVisitQuestion_(email, record, false) : email;
+  if (TMV3_PI_VERTICAL_BRANDING === true) sendable = tmv3_brandNotification_('PreInspection', sendable);
   const to = tmv3_piCreatorRecipients_(email.recipient);
   const cc = (email.cc || []).filter(function(x) { return to.indexOf(String(x).toLowerCase()) < 0; });
-  MailApp.sendEmail({to:to.join(','),cc:cc.join(','),subject:email.subject,
+  MailApp.sendEmail({to:to.join(','),cc:cc.join(','),subject:sendable.subject,
     body:(decision.followupNumber ? 'FOLLOW-UP #' + decision.followupNumber + ': ' : '') +
       'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; ') +
       (sendable.bodySuffix || ''),
@@ -2005,7 +2008,7 @@ function tmv3_preInspectionFailureAlert_(eventId, error) {
     const links = ev ? [ev.calendarUrl ? '<a href="' + esc(ev.calendarUrl) + '">Open Calendar event</a>' : '',
       ev.taskUrl ? '<a href="' + esc(ev.taskUrl) + '">Open Striven Task #' + esc(ev.taskId) + '</a>' : ''].filter(Boolean).join(' · ') : '';
     MailApp.sendEmail({to:TMV3.OPERATIONS.preInspectionFailureAlertEmail,
-      subject:'Pre-Inspection Automation: action required',
+      subject:TMV3_PI_VERTICAL_BRANDING === true ? tmv3_brandSubject_('PreInspection', 'Pre-Inspection Automation: action required') : 'Pre-Inspection Automation: action required',
       body:'Appointment: ' + appointment + (ev && ev.location ? '\nLocation: ' + ev.location : '') +
         '\n\nWhat happened: ' + why.what + '\nWhat to do: ' + why.todo +
         '\n\nNothing was changed for this appointment.' + (ev && ev.calendarUrl ? '\nCalendar: ' + ev.calendarUrl : '') +

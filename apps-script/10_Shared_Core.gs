@@ -16123,6 +16123,40 @@ function tmv3_buildCreateSource_(bundle, action) {
 
 // Status notes (last result, last refresh, last error) are logs, not settings: they live in
 // CacheService for 6 hours. The TM Audit sheet keeps the permanent record.
+// Every notification says which workflow it is from (operator rule 2026-11-13): subject prefix
+// plus a coloured header bar and label. Pre-Inspection keeps its red; the others get their own.
+var TMV3_NOTIFICATION_BRANDS = {
+  PreInspection:{label:'PRE-INSPECTION',color:'#b42b2f'},
+  Install:{label:'INSTALL',color:'#1f5fa8'},
+  Delivery:{label:'DELIVERY',color:'#2e7d32'},
+  Service:{label:'SERVICE',color:'#c26a00'}
+};
+
+function tmv3_brandSubject_(vertical, subject) {
+  const b = TMV3_NOTIFICATION_BRANDS[vertical];
+  const s = String(subject || '');
+  return !b || s.indexOf('[' + b.label + ']') >= 0 ? s : '[' + b.label + '] ' + s;
+}
+
+/** Brand an email {subject, htmlBody}: subject prefix; standard header gets the workflow colour and a
+ * label badge; any other HTML gets the badge at the top. Applied at send time; templates are unchanged. */
+function tmv3_brandNotification_(vertical, email) {
+  const b = TMV3_NOTIFICATION_BRANDS[vertical];
+  if (!b || !email) return email;
+  const badge = '<div style="display:inline-block;background:' + b.color + ';color:#ffffff;font-size:11px;font-weight:700;' +
+    'letter-spacing:1px;padding:3px 8px;border-radius:3px;margin-bottom:8px;">' + b.label + '</div>';
+  let html = String(email.htmlBody || '');
+  if (html.indexOf('>' + b.label + '</div>') < 0) {
+    const header = /<td style="background:#202020;border-top:4px solid #[0-9a-f]{6};padding:18px 24px;">/i;
+    if (header.test(html)) {
+      html = html.replace(header, '<td style="background:#202020;border-top:4px solid ' + b.color + ';padding:18px 24px;">' + badge + '<br>');
+    } else if (html) {
+      html = badge + html;
+    }
+  }
+  return Object.assign({}, email, {subject:tmv3_brandSubject_(vertical, email.subject), htmlBody:html});
+}
+
 function tmv3_statusNotePut_(key, value) {
   try { CacheService.getScriptCache().put(key, String(value || ''), 21600); } catch (ignored) {}
 }
@@ -20294,7 +20328,7 @@ function tmv3_verticalAutomationFailureAlert_(vertical,eventId,error) {
   props.setProperty(key,'SENDING');
   try{
     MailApp.sendEmail({to:TMV3.OPERATIONS.verticalFailureAlertEmail,
-      subject:vertical+' automation: action required',
+      subject:tmv3_brandSubject_(vertical,vertical+' automation: action required'),
       body:'This is an automated email notification from Classic Fireplace & BBQ Store.\n\nHi Pramodh,\n\n'+vertical+' could not verify an automatic transaction.\nEvent: '+eventId+'\n'+error+'\n\nThe record remains held. An uncertain write must be reconciled before retrying.',
       name:'Classic Fireplace & BBQ Store'});
     props.setProperty(key,'SENT');return {status:'SENT'};
