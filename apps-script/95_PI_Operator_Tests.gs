@@ -13,6 +13,11 @@
 //   piTest_WRITE_CleanupProperties()  deletes JUNK properties only
 //   piTest_CheckEvent()               READ-ONLY: why one event (settings.eventId) has or lacks Task links
 //   piTest_WRITE_FixEvent()           WRITES: reconciles that one event now (same safety checks as the slots)
+//   piTest_PreviewInstallNotices()    READ-ONLY: Install events that would get the Install notice, and why
+//   piTest_SendInstallNoticeTest()    sends those Install notices to Pramodh only, TEST subject
+//   piTest_PreviewMissingLinks()      READ-ONLY: events in all 4 workflows with no Striven Task link
+//   piTest_SendMissingLinksNow()      sends that list to Pramodh now (same email as the daily 13:00 one)
+//   piTest_WRITE_CreateSpecialInstallTasks()  one Installation Task per special-project event (preview unless write:true)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -165,8 +170,9 @@ function piTest_SendTestEmails() {
   if (MailApp.getRemainingDailyQuota() < records.length + 1) throw new Error('PI_TEST_EMAIL_QUOTA_LOW');
   const sent = [];
   records.forEach(function(record) {
-    const email = tmv3_preInspectionMissingDetailEmailPreview_(Object.assign({}, record, {notificationFollowupNumber:0}));
+    let email = tmv3_preInspectionMissingDetailEmailPreview_(Object.assign({}, record, {notificationFollowupNumber:0}));
     if (!email) return;
+    email = tmv3_brandNotification_('PreInspection', email);
     const assessment = tmv3_preInspectionMissingDetailAssessment_(record);
     const message = {to:'pramodh@classicfireplace.ca',subject:'TEST ' + email.subject,
       body:'Please update the missing Pre-Inspection details: ' + assessment.missing.map(function(x) { return x.message; }).join('; '),
@@ -194,7 +200,7 @@ function piTest_SendQuestionTest() {
   // Same rule as live: looks like a pre-inspection, CF Preinspects not a guest, not yet answered.
   const sent = (off.candidateRecords || []).filter(function(r) { return !tmv3_piVisitConfirmation_(r.eventId); }).map(function(record) {
     const r = Object.assign({}, record, {piOffSharedCandidate:true, notificationFollowupNumber:0});
-    const q = tmv3_piAddVisitQuestion_(tmv3_preInspectionMissingDetailEmailPreview_(r), r, true);
+    const q = tmv3_brandNotification_('PreInspection', tmv3_piAddVisitQuestion_(tmv3_preInspectionMissingDetailEmailPreview_(r), r, true));
     if (!q.questionAdded) throw new Error('PI_TEST_QUESTION_SECTION_NOT_ADDED');
     const message = {to:'pramodh@classicfireplace.ca',subject:'TEST ' + q.subject,
       body:'Please update the missing Pre-Inspection details.' + (q.bodySuffix || ''),htmlBody:q.htmlBody,name:'Classic Fireplace & BBQ Store'};
@@ -221,7 +227,7 @@ function piTest_propertyClass_(key, value, todayIso, upcoming) {
   const json = piTest_json_(value);
   // Records tied to one appointment: useful only while that appointment is still ahead.
   // upcoming = hashes of every event from yesterday on (CF Preinspects + Stephen); null = calendars unreadable, keep all.
-  const eventKey = /^TMV3_PI_(?:NOTIFICATION|QUESTION|ORIGIN|ASSIGNMENT_OVERRIDE)_([0-9a-f]{64})$/.exec(key);
+  const eventKey = /^TMV3_(?:PI_(?:NOTIFICATION|QUESTION|ORIGIN|ASSIGNMENT_OVERRIDE)|INSTALL_NOTICE)_([0-9a-f]{64})$/.exec(key);
   if (eventKey) {
     if (upcoming && !upcoming[eventKey[1]]) return {cls:'JUNK',why:'appointment is in the past'};
     return {cls:'KEEP',why:/NOTIFICATION|QUESTION/.test(key) ? 'stops repeat emails (appointment ahead)' : 'needed for an upcoming appointment'};
@@ -485,7 +491,8 @@ function piTest_EndToEndCheck() {
     const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh'; });
     // A pending one-off follow-on run (unfinished sweep) is expected, not extra.
     const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh' &&
-      !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true); });
+      !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) &&
+      !(h === 'tmv3_installSweepContinue' && have[h] === 1 && typeof TMV3_VERTICAL_FOLLOW_ON !== 'undefined' && TMV3_VERTICAL_FOLLOW_ON.Install); });
     const pi = ['tmv3_preInspectionCheck0800', 'tmv3_preInspectionCheck1300', 'tmv3_preInspectionCheck1700'].filter(function(h) { return !have[h]; });
     add('Triggers: PreInspection 08:00 / 13:00 / 17:00', pi.length ? 'FAIL' : 'PASS', pi.length ? 'missing ' + pi.join(', ') : 'all three installed',
       'Run tmv3_installStandardDailyTriggers');
@@ -641,6 +648,9 @@ function piTest_TriggerAudit() {
     else if (h === 'tmv3_preInspectionContinueEligibleSweep' && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) {
       kind = 'PI FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
     }
+    else if (h === 'tmv3_installSweepContinue' && typeof TMV3_VERTICAL_FOLLOW_ON !== 'undefined' && TMV3_VERTICAL_FOLLOW_ON.Install) {
+      kind = 'INSTALL FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
+    }
     rows.push({handler:h, kind:kind, installed:n, functionExists:typeof globalThis[h] === 'function', status:status});
   });
   rows.forEach(function(r) { Logger.log('PI_TRIGGER ' + r.status + ' | ' + r.handler + ' | ' + r.kind + ' | installed ' + r.installed +
@@ -684,5 +694,134 @@ function piTest_TriggerAudit() {
     missedSlots:gaps};
   Logger.log('PI_TRIGGER_AUDIT=' + JSON.stringify(summary));
   return {triggers:rows, missedSlots:gaps, summary:summary};
+}
+
+/** READ-ONLY: which Install events would get the Install notice now, what is wrong, and the timing decision. */
+function piTest_PreviewInstallNotices() {
+  const props = PropertiesService.getScriptProperties();
+  const rows = tmv3_installNoticeRecords_().map(function(x) {
+    const r = x.record;
+    const row = {title:r.title, start:r.start, creator:tmv3_preInspectionCreatorEmail_(r), so:r.orderNumber || ''};
+    if (x.error) { row.status = 'SO_READ_FAILED'; row.error = x.error; return row; }
+    row.missing = x.assessment.missing.map(function(m) { return m.message; });
+    row.soStatus = x.assessment.order ? (x.assessment.order.statusName || x.assessment.order.status) : '';
+    if (!x.assessment.shouldNotify) { row.status = 'OK_NOTHING_TO_SEND'; return row; }
+    let state = null; try { state = JSON.parse(props.getProperty('TMV3_INSTALL_NOTICE_' + tmv3_hash_(r.eventId)) || 'null'); } catch (e) {}
+    const d = tmv3_preInspectionNotificationDecision_(r, state);
+    row.status = d.send ? 'WOULD_SEND' : d.status; row.followup = d.followupNumber || 0;
+    row.wouldGoTo = tmv3_piCreatorRecipients_(row.creator).join(',');
+    return row;
+  });
+  rows.filter(function(r) { return r.status !== 'OK_NOTHING_TO_SEND'; })
+    .forEach(function(r) { Logger.log('PI_INSTALL_NOTICE=' + JSON.stringify(r)); });
+  Logger.log('PI_INSTALL_NOTICE_SUMMARY=' + JSON.stringify({checked:rows.length,
+    wouldSend:rows.filter(function(r) { return r.status === 'WOULD_SEND'; }).length,
+    needAttention:rows.filter(function(r) { return r.missing && r.missing.length; }).length}));
+  return rows;
+}
+
+/** TEST: the Install notice for every install that has an issue, sent ONLY to Pramodh with TEST in the subject. */
+function piTest_SendInstallNoticeTest() {
+  const to = 'pramodh@classicfireplace.ca';
+  if (piTest_settings_().emailTo !== to) throw new Error('PI_TEST_RECIPIENT_CHANGED');
+  const list = tmv3_installNoticeRecords_().filter(function(x) { return !x.error && x.assessment.shouldNotify; }).slice(0, 10);
+  if (MailApp.getRemainingDailyQuota() < list.length + 1) throw new Error('PI_TEST_EMAIL_QUOTA_LOW');
+  const sent = list.map(function(x) {
+    const e = tmv3_installNoticeEmail_(x.record, x.assessment, 0);
+    const message = {to:to, subject:'TEST ' + e.subject, body:e.body, htmlBody:e.htmlBody, name:'Classic Fireplace & BBQ Store'};
+    if (message.to !== to || message.cc || message.bcc) throw new Error('PI_TEST_RECIPIENT_GUARD');
+    MailApp.sendEmail(message);
+    return {subject:message.subject, wouldGoTo:tmv3_piCreatorRecipients_(e.recipient).join(','), wouldCc:e.cc.join(',')};
+  });
+  Logger.log('PI_TEST_INSTALL_NOTICES=' + JSON.stringify({to:to, count:sent.length, emails:sent}));
+  return sent;
+}
+
+/** READ-ONLY: upcoming events across all four workflows that have no Striven Task link. */
+function piTest_PreviewMissingLinks() {
+  const scan = tmv3_missingLinksScan_();
+  scan.rows.forEach(function(r) { Logger.log('PI_MISSING_LINK ' + r.vertical + ' | ' + Utilities.formatDate(r.start, TMV3_TIMEZONE, 'EEE MMM d h:mm a') +
+    ' | ' + r.title + (r.calendar ? ' | ' + r.calendar : '')); });
+  Logger.log('PI_MISSING_LINKS_SUMMARY=' + JSON.stringify({count:scan.rows.length, unreadable:scan.unreadable}));
+  return scan;
+}
+
+/** Sends the missing-links email to Pramodh now (only recipient), even if today's was already sent. */
+function piTest_SendMissingLinksNow() {
+  const r = tmv3_sendMissingLinksDigest_(true);
+  Logger.log('PI_MISSING_LINKS_SENT=' + JSON.stringify(r));
+  return r;
+}
+
+/** Special-project Installation Tasks (no Sales Order): one Task per matching Install event,
+ * then the Task link goes on that event. Settings below; previews unless write is true.
+ * Skips any event that already has a Striven Task link (safe to re-run). */
+function piTest_specialInstallSettings_() {
+  return {
+    titleStartsWith: 'Times - Chatsworth',
+    customerId: 61681,                 // 33 Chatsworth Limited Partnership
+    templateTaskId: 19491,             // an existing Installation Task: copies its Task Type only
+    lookaheadDays: 120,
+    write: false                       // set true to create the Tasks and link them
+  };
+}
+
+function piTest_WRITE_CreateSpecialInstallTasks() {
+  const cfgS = piTest_specialInstallSettings_();
+  const cfg = TMV3.VERTICALS.Install, calId = cfg.calendarIds[0];
+  const cal = CalendarApp.getCalendarById(calId);
+  const from = new Date(); from.setHours(0, 0, 0, 0);
+  const to = new Date(from); to.setDate(to.getDate() + cfgS.lookaheadDays);
+  const events = cal.getEvents(from, to).filter(function(ev) {
+    return String(ev.getTitle() || '').trim().toLowerCase().indexOf(cfgS.titleStartsWith.toLowerCase()) === 0;
+  });
+  // Task Type from an existing Installation Task (never guessed).
+  const tpl = tmv3_fetchJson_(TMV3.API_BASE + '/v1/tasks/' + cfgS.templateTaskId, {method:'get'}) || {};
+  const type = tmv3_first_(tpl, ['Type','TaskType','type','taskType']) || {};
+  const typeId = Number(tmv3_first_(type, ['Id','id'])), typeName = String(tmv3_first_(type, ['Name','name']) || '');
+  if (!typeId || !/install/i.test(typeName)) throw new Error('TEMPLATE_IS_NOT_AN_INSTALLATION_TASK: ' + typeName);
+  const cust = tmv3_fetchJson_(TMV3.API_BASE + '/v1/customers/' + cfgS.customerId, {method:'get'}) || {};
+  if (Number(tmv3_first_(cust, ['Id','id'])) !== cfgS.customerId) throw new Error('CUSTOMER_NOT_FOUND: ' + cfgS.customerId);
+  const custName = String(tmv3_first_(cust, ['Name','name']) || '');
+  // Location only when the customer has exactly one in the cache.
+  const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(cfgS.customerId); });
+  const loc = locs.length === 1 ? locs[0] : null;
+  const out = [];
+  events.forEach(function(ev) {
+    const desc = String(ev.getDescription() || '');
+    const start = ev.getStartTime(), end = ev.getEndTime();
+    const row = {eventId:ev.getId(), title:ev.getTitle(), date:Utilities.formatDate(start, TMV3_TIMEZONE, 'yyyy-MM-dd')};
+    if (/TaskID=\d+/i.test(desc)) { row.status = 'ALREADY_LINKED'; out.push(row); return; }
+    const payload = {
+      Title: cfgS.titleStartsWith + ' - Special Project - ' + Utilities.formatDate(start, TMV3_TIMEZONE, 'MMM d, yyyy'),
+      Type: {Id:typeId, Name:typeName},
+      Description: 'One-off special project (no Sales Order). Calendar: ' + ev.getTitle(),
+      Budget: 0,
+      StartDateTime: tmv3_strivenTaskDateTime_(start),
+      DueDateTime: tmv3_strivenTaskDateTime_(end),
+      UseSubContractor: false,
+      Customer: {Id:cfgS.customerId, Number:String(cfgS.customerId), Name:custName}
+    };
+    if (loc) payload.Location = {Id:Number(loc['Location ID']), Name:String(loc['Name'] || loc['Location Name'] || '')};
+    row.payload = payload;
+    if (cfgS.write !== true) { row.status = 'PREVIEW_ONLY'; out.push(row); return; }
+    const json = tmv3_fetchJson_(TMV3.API_BASE + '/v2/tasks', {method:'post', contentType:'application/json', payload:JSON.stringify(payload)});
+    const taskId = Number(tmv3_extractCreatedTaskId_(json) || 0);
+    if (!taskId) { row.status = 'CREATE_NO_ID_CHECK_STRIVEN'; out.push(row); return; }
+    row.taskId = taskId;
+    tmv3_audit_('Install', ev.getId(), String(taskId), 'SPECIAL_PROJECT_TASK_CREATE', 'PASS', JSON.stringify({customer:cfgS.customerId, title:payload.Title}));
+    const url = 'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=' + taskId;
+    const label = 'Task #' + taskId + ' – ' + payload.Title;
+    const updated = tmv3_verticalClickableDescription_(desc, {vertical:'Install', links:[{key:'TASK', url:url, label:label}]});
+    ev.setDescription(updated);
+    row.linked = String(ev.getDescription() || '').indexOf('TaskID=' + taskId) >= 0;
+    row.status = row.linked ? 'CREATED_AND_LINKED' : 'CREATED_LINK_NOT_VERIFIED';
+    out.push(row);
+  });
+  Logger.log('PI_SPECIAL_INSTALL=' + JSON.stringify({customer:cfgS.customerId + ' ' + custName, taskType:typeId + ' ' + typeName,
+    location:loc ? loc['Location ID'] : 'none (customer has ' + locs.length + ')', write:cfgS.write === true, events:out.map(function(r) {
+      return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', payloadTitle:r.payload && r.payload.Title};
+    })}));
+  return out;
 }
 

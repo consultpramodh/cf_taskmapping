@@ -180,7 +180,7 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
 
     const when = tmv3_date_(record.start) + ' ' + tmv3_time_(record.start) +
       '–' + tmv3_time_(record.end);
-    const subject = 'ACTION REQUIRED: Sales Order # missing from install event';
+    const subject = tmv3_brandSubject_('Install', 'ACTION REQUIRED: Sales Order # missing from install event');
     const textBody =
       'ACTION REQUIRED\n\n' +
       'The install calendar event below is missing the Sales Order #.\n\n' +
@@ -200,7 +200,7 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
         to: recipients.join(','),
         subject: subject,
         body:'This is an automated email notification from Classic Fireplace & BBQ Store.\n\nHi '+greeting+',\n\n'+textBody,
-        htmlBody:'<p><em>This is an automated email notification from Classic Fireplace &amp; BBQ Store.</em></p>'+
+        htmlBody:tmv3_brandNotification_('Install',{htmlBody:'x'}).htmlBody.replace(/x$/,'')+'<p><em>This is an automated email notification from Classic Fireplace &amp; BBQ Store.</em></p>'+
           '<p>Hi '+esc(greeting)+',</p><p style="color:#B42318;font-weight:700;">Sales Order Number missing</p>'+
           '<p>'+esc(record.title || '(no title)')+'<br>'+esc(when)+'<br>'+esc(record.location || '')+'</p>'+
           '<p>Please add the correct Sales Order number to the appointment.</p>'+
@@ -226,6 +226,203 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
   };
 }
 
+// Install notification — same standard format and dynamic behaviour as the PreInspection
+// missing-details email (operator rule 2026-11-13). One email per install listing ONLY what is
+// wrong right now: Sales Order # missing, Sales Order not Approved (Quoted / Pending Approval /
+// Incomplete), Sales Order not found in Striven, or job-site address missing. First email and
+// follow-ups use the same timing rules as PreInspection (tmv3_preInspectionNotificationDecision_).
+// While ON, it replaces the older plain "Sales Order # missing" reminder.
+var TMV3_INSTALL_NOTICE_ENABLED = false;   // ON after the TEST email is approved
+const TMV3_INSTALL_SO_NOT_APPROVED = Object.freeze({'18':'incomplete','19':'quoted','20':'pending approval'});
+const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 31;
+// One-off special projects: booked without a Sales Order on purpose (operator 2026-11-13).
+// Their Install notice never asks for an SO #.
+const TMV3_INSTALL_SPECIAL_PROJECTS = Object.freeze([/^\s*Times\s*-\s*Chatsworth\b/i]);
+
+/** Fresh Striven status of the SO on an Install event: {status:'FOUND', orderId, number, statusId, statusName} or a reason. */
+function tmv3_installFreshOrderStatus_(record) {
+  const number = String(tmv3_clean_(record && record.orderNumber));
+  if (!/^\d{4,8}$/.test(number)) return {status:'NO_VALID_SO_NUMBER',number:number};
+  const query = {PageIndex:0,PageSize:2,Number:number};
+  const cid = Number(record.customerNumber || 0);
+  if (Number.isSafeInteger(cid) && cid > 0) query.CustomerId = cid;
+  const response = tmv3_fetchJson_(TMV3.API_BASE + '/v1/sales-orders/search',
+    {method:'post',contentType:'application/json',payload:JSON.stringify(query)});
+  const rows = response && (response.Data || response.data);
+  const count = Number(response && (response.TotalCount !== undefined ? response.TotalCount : response.totalCount));
+  if (!Array.isArray(rows) || count !== 1 || rows.length !== 1 ||
+      String(tmv3_first_(rows[0], ['Number','OrderNumber'])) !== number) return {status:'SO_NOT_FOUND_OR_NOT_UNIQUE',number:number};
+  const orderId = Number(tmv3_first_(rows[0], ['Id','id']));
+  const order = tmv3_fetchJson_(TMV3.API_BASE + '/v1/sales-orders/' + orderId, {method:'get'}) || {};
+  if (Number(tmv3_first_(order, ['Id','id'])) !== orderId) return {status:'SO_READ_MISMATCH',number:number};
+  const st = tmv3_first_(order, ['Status','status']) || {};
+  return {status:'FOUND',orderId:orderId,number:number,
+    statusId:String(tmv3_first_(st, ['Id','id']) || ''),statusName:tmv3_norm_(tmv3_first_(st, ['Name','name']) || '')};
+}
+
+/** What is wrong with one install event right now (dynamic list, like the PreInspection assessment). */
+function tmv3_installNoticeAssessment_(record) {
+  const missing = [];
+  let order = null;
+  // Sales Orders are 6 digits. A 5-digit number (e.g. "#59298") is a customer #, not an SO.
+  // Also read "SO585380-…" / "SO 585380" written straight after other text in the title or notes.
+  let so = String(tmv3_clean_(record.orderNumber));
+  if (!/^\d{6}$/.test(so)) {
+    const m = /SO\s*#?\s*(\d{6})(?!\d)/.exec(String(record.title || '') + ' ' + String(record.descriptionClean || record.rawDescription || ''));
+    so = m ? m[1] : '';
+  }
+  record = Object.assign({}, record, {orderNumber:so});
+  const special = TMV3_INSTALL_SPECIAL_PROJECTS.some(function(rx) { return rx.test(String(record.title || '')); });
+  if (!so && special) {
+    // Special project: no Sales Order by design.
+  } else if (!so) {
+    missing.push({code:'SALES_ORDER',field:'Sales Order',message:'Sales Order # missing',now:'Sales Order # missing',should:'Sales Order # of the Approved order'});
+  } else {
+    order = tmv3_installFreshOrderStatus_(record);
+    if (order.status === 'FOUND') {
+      const label = TMV3_INSTALL_SO_NOT_APPROVED[order.statusId];
+      // ID and name must agree, so a renamed status never sends an email.
+      if (label && label === order.statusName) {
+        const shown = label.replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+        missing.push({code:'SO_NOT_APPROVED',field:'Sales Order',message:'Sales Order #' + order.number + ' is ' + shown + ', not Approved',
+          now:'SO #' + order.number + ' — ' + shown,should:'SO #' + order.number + ' — Approved'});
+      }
+    } else if (order.status === 'SO_NOT_FOUND_OR_NOT_UNIQUE' || order.status === 'NO_VALID_SO_NUMBER') {
+      missing.push({code:'SO_NOT_FOUND',field:'Sales Order',message:'Sales Order #' + (order.number || '') + ' not found in Striven',
+        now:'SO #' + (order.number || '?') + ' — not found',should:'The correct Sales Order #'});
+    }
+  }
+  const streetInNotes = /\b\d{1,6}\s+[A-Za-z][\w'.-]*(?:\s+[A-Za-z][\w'.-]*){0,3}\s+(?:St|Street|Ave|Avenue|Rd|Road|Dr|Drive|Cres|Crescent|Blvd|Boulevard|Ct|Court|Ln|Lane|Way|Pl|Place|Trail|Terrace|Circle|Cir|Pkwy|Parkway|Gate|Hwy|Highway|Line|Sideroad)\b/i
+    .test(String(record.descriptionClean || record.rawDescription || ''));
+  if (!tmv3_clean_(record.location) && !streetInNotes) {
+    missing.push({code:'LOCATION',field:'Location',message:'Job-site address missing',now:'Location missing',should:'Full Job-Site Address'});
+  }
+  const creatorEmail = tmv3_preInspectionCreatorEmail_(record);
+  return {missing:missing,order:order,creatorEmail:creatorEmail,shouldNotify:missing.length > 0};
+}
+
+/** The Install email in the standard notification format (same layout as PreInspection). */
+function tmv3_installNoticeEmail_(record, assessment, followupNumber) {
+  const esc = tmv3_preInspectionHtmlEscape_;
+  const firstName = tmv3_preInspectionCreatorFirstName_(assessment.creatorEmail);
+  const when = Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'MMM d, yyyy') + ' · ' +
+    Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'h:mm a') + ' – ' + Utilities.formatDate(new Date(record.end), TMV3_TIMEZONE, 'h:mm a');
+  const followupLabel = followupNumber ? 'FOLLOW-UP #' + followupNumber : '';
+  const items = assessment.missing.map(function(m) {
+    return '<div style="color:#B42318;font-weight:700;">❌ ' + esc(m.message) + '</div>'; }).join('');
+  const rows = assessment.missing.map(function(m) {
+    return '<tr><td valign="top" style="padding:12px;border:1px solid #dddddd;font-weight:700;">' + esc(m.field) +
+      '</td><td valign="top" style="padding:12px;border:1px solid #dddddd;"><strong style="color:#B42318;">' + esc(m.now) +
+      '</strong></td><td valign="top" style="padding:12px;border:1px solid #dddddd;color:#256b35;font-weight:700;">' + esc(m.should) + '</td></tr>';
+  }).join('');
+  const order = assessment.order;
+  const soLink = order && order.status === 'FOUND' ? '<div style="font-size:14px;margin-bottom:14px;"><a href="' +
+    esc('https://classicfireplace.striven.com/next/crm#/sales-orders/' + order.orderId) + '">Open Sales Order #' + esc(order.number) + '</a></div>' : '';
+  const html =
+    '<!doctype html><html lang="en"><body style="margin:0;padding:0;background:#f4f3f1;font-family:Arial,Helvetica,sans-serif;color:#222;">' +
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
+    '<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;">' +
+    '<tr><td style="background:#202020;border-top:4px solid #b42b2f;padding:18px 24px;">' +
+      '<div style="font-size:18px;font-weight:700;color:#ffffff;">' + (followupLabel ? followupLabel + ' — ' : '') + 'Install Update Required</div>' +
+      '<div style="font-size:12px;color:#aaaaaa;margin-top:3px;">Classic Fireplace &amp; BBQ Store</div>' +
+    '</td></tr>' +
+    '<tr><td style="padding:20px 24px 12px;">' +
+      '<div style="font-size:12px;color:#666;font-style:italic;margin-bottom:16px;">This is an automated email notification from Classic Fireplace &amp; BBQ Store.</div>' +
+      '<div style="font-size:14px;line-height:21px;">Hi <strong>' + esc(firstName) + '</strong>,</div>' +
+      '<div style="margin-top:12px;padding:12px;background:#f6f5f3;border:1px solid #e2e0dc;"><strong>Install requiring attention</strong><br>' +
+        esc(record.title || '(Untitled event)') + '<br><strong>' + esc(when) + '</strong><br>' + esc(record.location || 'Location missing') + '</div>' +
+      '<div style="font-size:14px;line-height:21px;margin-top:8px;">This install needs the following before it can go ahead. Please update the items highlighted below.</div>' +
+      '<div style="margin-top:12px;background:#fff5f5;border-left:4px solid #b42b2f;padding:11px 13px;font-size:13px;line-height:22px;color:#8f2024;">' + items + '</div>' +
+    '</td></tr>' +
+    '<tr><td style="padding:0 24px 14px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f6f5f3;border:1px solid #e2e0dc;"><tr><td style="padding:12px 14px;">' +
+      '<div style="font-size:15px;font-weight:700;">' + esc(record.title || '(Untitled event)') + '</div>' +
+      '<div style="font-size:12px;color:#666;margin-top:4px;">' + esc(when) + '</div>' +
+      (record.location ? '<div style="font-size:12px;color:#666;margin-top:4px;">' + esc(record.location) + '</div>' : '') +
+    '</td></tr></table></td></tr>' +
+    '<tr><td style="padding:0 24px 20px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #dddddd;font-size:13px;">' +
+      '<tr><td width="18%" style="background:#f3f3f3;padding:10px 12px;border-right:1px solid #dddddd;border-bottom:1px solid #dddddd;"></td>' +
+        '<td width="41%" style="background:#fff1f1;color:#9b1c1f;font-weight:700;padding:10px 12px;border-right:1px solid #dddddd;border-bottom:1px solid #dddddd;">What it is now</td>' +
+        '<td width="41%" style="background:#f1f8f1;color:#28632f;font-weight:700;padding:10px 12px;border-bottom:1px solid #dddddd;">What it should be</td></tr>' +
+      rows +
+    '</table></td></tr>' +
+    '<tr><td style="padding:0 24px 22px;">' + soLink +
+      '<div style="font-size:14px;margin-bottom:14px;"><a href="' +
+      esc(tmv3_calendarEventUrl_(record.eventId, record.calendarId || TMV3.VERTICALS.Install.calendarIds[0])) + '">Open calendar appointment</a></div>' +
+      '<div style="font-size:14px;margin-bottom:14px;">Please get the Sales Order approved in Striven (or update the calendar event) before the install.</div>' +
+      '<div style="font-size:14px;">Thank you.</div></td></tr>' +
+    '<tr><td style="background:#202020;padding:12px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return tmv3_brandNotification_('Install', {
+    recipient:assessment.creatorEmail,
+    cc:tmv3_preInspectionNotificationCc_(),
+    subject:(followupLabel ? followupLabel + ' | ' : '') + 'INSTALL DETAILS REQUIRED: ' + (record.calendarCustomerName || record.title || 'Install') +
+      ' | ' + when + ' | ' + assessment.missing.map(function(m) { return m.code === 'SO_NOT_APPROVED' ? 'SO not Approved' : m.code === 'SO_NOT_FOUND' ? 'SO not found' : m.field; })
+        .filter(function(x, i, a) { return a.indexOf(x) === i; }).join(', '),
+    body:'Install update required: ' + assessment.missing.map(function(m) { return m.message; }).join('; '),
+    htmlBody:html
+  });
+}
+
+/** Install events in the lookahead window, each with its assessment (Striven read only when an SO # is present). */
+function tmv3_installNoticeRecords_() {
+  const cfg = TMV3.VERTICALS.Install;
+  const cal = CalendarApp.getCalendarById(cfg.calendarIds[0]);
+  if (!cal) throw new Error('Install Calendar is unavailable.');
+  const start = new Date(); start.setHours(0,0,0,0);
+  const end = new Date(start); end.setDate(end.getDate() + TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS);
+  const out = [];
+  cal.getEvents(start, end).forEach(function(event) {
+    if (event.isAllDayEvent && event.isAllDayEvent()) return;
+    let record = null;
+    try { record = tmv3_calendarEvent_('Install', cfg, {calendarId:cfg.calendarIds[0]}, event); } catch (e) { return; }
+    if (!record || record.status === 'cancelled') return;
+    let assessment;
+    try { assessment = tmv3_installNoticeAssessment_(record); }
+    catch (err) { out.push({record:record,error:String(err && err.message || err).slice(0, 160)}); return; }
+    out.push({record:record,assessment:assessment});
+  });
+  return out;
+}
+
+/** Send: same first-email / follow-up timing as PreInspection; Steve + Colleen paired like PreInspection. */
+function tmv3_sendInstallNotices_(scope) {
+  if (TMV3_INSTALL_NOTICE_ENABLED !== true) return {status:'INSTALL_NOTICES_OFF',sent:0};
+  if (TMV3.MODE !== 'PRODUCTION_WRITE' || TMV3.OPERATIONS.installRemindersEnabled !== true) return {status:'REMINDERS_GATED',sent:0};
+  const props = PropertiesService.getScriptProperties();
+  const out = {status:'COMPLETE',scope:scope,checked:0,needAttention:0,sent:0,errors:0,events:[]};
+  tmv3_installNoticeRecords_().forEach(function(x) {
+    out.checked++;
+    if (x.error) { out.events.push({eventId:x.record.eventId,status:'SO_READ_FAILED',error:x.error}); return; }
+    if (!x.assessment.shouldNotify) return;
+    out.needAttention++;
+    const record = x.record, key = 'TMV3_INSTALL_NOTICE_' + tmv3_hash_(record.eventId);
+    let state = null;
+    try { state = JSON.parse(props.getProperty(key) || 'null'); } catch (e) { out.events.push({eventId:record.eventId,status:'UNCERTAIN_SEND_NO_RETRY'}); return; }
+    const decision = tmv3_preInspectionNotificationDecision_(record, state);
+    if (!decision.send) { out.events.push({eventId:record.eventId,status:decision.status}); return; }
+    const email = tmv3_installNoticeEmail_(record, x.assessment, decision.followupNumber);
+    if (!email.recipient) { out.events.push({eventId:record.eventId,status:'CREATOR_UNVERIFIED'}); return; }
+    if (MailApp.getRemainingDailyQuota() < 3) { out.errors++; return; }
+    const to = tmv3_piCreatorRecipients_(email.recipient);
+    const cc = (email.cc || []).filter(function(c) { return to.indexOf(String(c).toLowerCase()) < 0; });
+    const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
+    props.setProperty(key, JSON.stringify(next));
+    try {
+      MailApp.sendEmail({to:to.join(','),cc:cc.join(','),subject:email.subject,body:email.body,htmlBody:email.htmlBody,name:'Classic Fireplace & BBQ Store'});
+      next.status = 'SENT'; props.setProperty(key, JSON.stringify(next));
+      out.sent++;
+      out.events.push({eventId:record.eventId,status:'SENT',to:to.join(','),followup:decision.followupNumber});
+      tmv3_audit_('Install', record.eventId, '', 'INSTALL_NOTICE_EMAIL', 'SENT',
+        JSON.stringify({to:to,followupNumber:decision.followupNumber,missing:x.assessment.missing.map(function(m) { return m.code; })}));
+    } catch (err) {
+      out.errors++;
+      tmv3_audit_('Install', record.eventId, '', 'INSTALL_NOTICE_EMAIL', 'ATTENTION', String(err && err.message || err));
+    }
+  });
+  if (out.errors) out.status = 'COMPLETE_WITH_ERRORS';
+  return out;
+}
+
 // Original: 58_Operations; Function: tmv3_sendInstallMissingSoRemindersNow
 function tmv3_sendInstallMissingSoRemindersNow() {
   return tmv3_sendInstallMissingSoReminders_('MANUAL');
@@ -238,6 +435,11 @@ function tmv3_installTriggers() { return tmv3_installStandardDailyTriggers(); }
 function tmv3_installReminderCheck() {
   if (TMV3.MODE!=='PRODUCTION_WRITE' || TMV3.OPERATIONS.installRemindersEnabled!==true) {
     return {status:'REMINDERS_GATED',sent:0};
+  }
+  // The standard Install notice (dynamic, all issues in one email) replaces the plain missing-SO reminder.
+  if (TMV3_INSTALL_NOTICE_ENABLED === true) {
+    try { return tmv3_sendInstallNotices_('AUTO'); }
+    catch (err) { return {status:'ATTENTION',error:String(err && err.message || err).slice(0,200)}; }
   }
   return tmv3_sendInstallMissingSoReminders_('AUTO');
 }
@@ -305,7 +507,14 @@ function tmv3_installStandardDailyTriggers() {
 }
 
 // Original: 60_Automation; Function: tmv3_installSweepContinue
-function tmv3_installSweepContinue(){return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0};}
+function tmv3_installSweepContinue(){
+  // Follow-on run: continues an unfinished Install sweep a minute after a slot ran out of time.
+  tmv3_verticalClearFollowOn_('Install');
+  if(!TMV3_VERTICAL_FOLLOW_ON.Install)return {status:'RETIRED_OUTSIDE_STANDARD_SLOTS',writes:0};
+  const result=tmv3_runFullVerticalSweep_('Install',{followOn:true});
+  tmv3_audit_('Install','','','STANDARD_DAILY_SLOT',result.status,JSON.stringify({slot:'FOLLOW_ON',result:result}));
+  return result;
+}
 
 // Original: 60_Automation; Function: tmv3_installResolveContactFresh_
 function tmv3_installResolveContactFresh_(record,customerId,preferredContactId,plan) {
