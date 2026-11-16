@@ -601,14 +601,20 @@ function piTest_WRITE_FixEvent() {
   try {
     tmv3_preInspectionSendMissingDetails_ = function() { return {status:'SUPPRESSED_BY_OPERATOR_FIX',sent:0}; };
     tmv3_preInspectionFailureAlert_ = function() { return {status:'SUPPRESSED_BY_OPERATOR_FIX',sent:0}; };
-    r = tmv3_preInspectionAutomationCycle_({force:true, eventId:id, reason:'OPERATOR_FIX_EVENT'});
+    // Another run may hold the lock: keep asking (each try waits 30 s) for up to 4 minutes.
+    const began = Date.now();
+    r = tmv3_preInspectionAutomationCycle_({force:true, eventId:id, skipSourceRefresh:true, reason:'OPERATOR_FIX_EVENT'});
+    while (r.status === 'LOCK_BUSY' && Date.now() - began < 240000) {
+      r = tmv3_preInspectionAutomationCycle_({force:true, eventId:id, skipSourceRefresh:true, reason:'OPERATOR_FIX_EVENT'});
+    }
   } finally {
     tmv3_preInspectionSendMissingDetails_ = saved.send; tmv3_preInspectionFailureAlert_ = saved.alert;
   }
   const one = (r.results || [])[0] || {};
   const out = {eventId:id, status:r.status, writes:r.writes, plan:one.plan || '', taskId:one.taskId || '',
     blocker:one.blocker || '', error:one.error || r.error || '', recreate:one.recreateAuthorized || ''};
-  if (!r.results || !r.results.length) out.note = 'Event not found on CF Preinspects (or before today): nothing reconciled.';
+  if (r.status === 'LOCK_BUSY') out.note = 'Another automation run held the lock for 4 minutes: nothing changed. Run again.';
+  else if (!r.results || !r.results.length) out.note = 'Event not found on CF Preinspects (or before today): nothing reconciled.';
   // A CREATE plan has no Task ID until it runs: read the link the run wrote back onto the event.
   try {
     const ev = CalendarApp.getCalendarById(TMV3.VERTICALS.PreInspection.primaryCalendarId).getEventById(id);
