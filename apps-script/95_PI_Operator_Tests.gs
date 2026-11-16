@@ -807,6 +807,12 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
       Customer: {Id:cfgS.customerId, Number:String(cfgS.customerId), Name:custName}
     };
     if (loc) payload.Location = {Id:Number(loc['Location ID']), Name:String(loc['Name'] || loc['Location Name'] || '')};
+    // Requested By = the employee who created the event (the sales rep), matched exactly in Striven.
+    const creator = String((ev.getCreators && ev.getCreators() || [])[0] || '').toLowerCase();
+    const emp = creator ? tmv3_resolveOrganizerEmployee_({organizer:creator}) : null;
+    if (!emp || emp.status !== 'MATCHED') { row.status = 'REQUESTED_BY_NOT_AN_EMPLOYEE: ' + (creator || 'no creator'); out.push(row); return; }
+    payload.RequestedBy = {Id:Number(emp.employee.id), Name:String(emp.employee.name || ''), Type:'employee'};
+    row.requestedBy = emp.employee.name + ' (' + emp.employee.id + ')';
     row.payload = payload;
     if (cfgS.write !== true) { row.status = 'PREVIEW_ONLY'; out.push(row); return; }
     const json = tmv3_fetchJson_(TMV3.API_BASE + '/v2/tasks', {method:'post', contentType:'application/json', payload:JSON.stringify(payload)});
@@ -825,7 +831,7 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
   Logger.log('PI_SPECIAL_INSTALL=' + JSON.stringify({customer:cfgS.customerId + ' ' + custName, taskType:typeId + ' ' + typeName,
     location:loc ? loc['Location ID'] + ' ' + text(loc).replace(/\s+/g, ' ').slice(0, 120) : 'none (customer has ' + locs.length + ', ' + matched.length + ' match "' + cfgS.locationMatch + '")',
     allLocations:locs.map(function(r) { return r['Location ID'] + ' ' + text(r).replace(/\s+/g, ' ').slice(0, 90); }), write:cfgS.write === true, events:out.map(function(r) {
-      return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', payloadTitle:r.payload && r.payload.Title};
+      return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', requestedBy:r.requestedBy || '', payloadTitle:r.payload && r.payload.Title};
     })}));
   return out;
 }
