@@ -762,7 +762,8 @@ function piTest_specialInstallSettings_() {
     customerId: 61681,                 // 33 Chatsworth Limited Partnership
     templateTaskId: 19491,             // an existing Installation Task: copies its Task Type only
     lookaheadDays: 120,
-    write: false                       // set true to create the Tasks and link them
+    locationMatch: 'Chatsworth',       // when the customer has several locations
+    write: true                       // set true to create the Tasks and link them
   };
 }
 
@@ -776,16 +777,19 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
     return String(ev.getTitle() || '').trim().toLowerCase().indexOf(cfgS.titleStartsWith.toLowerCase()) === 0;
   });
   // Task Type from an existing Installation Task (never guessed).
-  const tpl = tmv3_fetchJson_(TMV3.API_BASE + '/v1/tasks/' + cfgS.templateTaskId, {method:'get'}) || {};
-  const type = tmv3_first_(tpl, ['Type','TaskType','type','taskType']) || {};
-  const typeId = Number(tmv3_first_(type, ['Id','id'])), typeName = String(tmv3_first_(type, ['Name','name']) || '');
-  if (!typeId || !/install/i.test(typeName)) throw new Error('TEMPLATE_IS_NOT_AN_INSTALLATION_TASK: ' + typeName);
+  const tpl = tmv3_getTaskById_(cfgS.templateTaskId) || {};   // the same Task read the automation uses
+  const typeId = Number(tpl['Task Type ID'] || 0), typeName = String(tpl['Task Type'] || '');
+  if (!typeId || !/install/i.test(typeName))
+    throw new Error('TEMPLATE_IS_NOT_AN_INSTALLATION_TASK: Task ' + cfgS.templateTaskId + ' type ' + typeId + ' "' + typeName + '"');
   const cust = tmv3_fetchJson_(TMV3.API_BASE + '/v1/customers/' + cfgS.customerId, {method:'get'}) || {};
   if (Number(tmv3_first_(cust, ['Id','id'])) !== cfgS.customerId) throw new Error('CUSTOMER_NOT_FOUND: ' + cfgS.customerId);
   const custName = String(tmv3_first_(cust, ['Name','name']) || '');
   // Location only when the customer has exactly one in the cache.
   const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(cfgS.customerId); });
-  const loc = locs.length === 1 ? locs[0] : null;
+  // Several locations: use the one whose name/address contains locationMatch (only if exactly one does).
+  const text = function(r) { return Object.keys(r).map(function(k) { return String(r[k] || ''); }).join(' '); };
+  const matched = cfgS.locationMatch ? locs.filter(function(r) { return text(r).toLowerCase().indexOf(cfgS.locationMatch.toLowerCase()) >= 0; }) : [];
+  const loc = locs.length === 1 ? locs[0] : matched.length === 1 ? matched[0] : null;
   const out = [];
   events.forEach(function(ev) {
     const desc = String(ev.getDescription() || '');
@@ -803,6 +807,12 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
       Customer: {Id:cfgS.customerId, Number:String(cfgS.customerId), Name:custName}
     };
     if (loc) payload.Location = {Id:Number(loc['Location ID']), Name:String(loc['Name'] || loc['Location Name'] || '')};
+    // Requested By = the employee who created the event (the sales rep), matched exactly in Striven.
+    const creator = String((ev.getCreators && ev.getCreators() || [])[0] || '').toLowerCase();
+    const emp = creator ? tmv3_resolveOrganizerEmployee_({organizer:creator}) : null;
+    if (!emp || emp.status !== 'MATCHED') { row.status = 'REQUESTED_BY_NOT_AN_EMPLOYEE: ' + (creator || 'no creator'); out.push(row); return; }
+    payload.RequestedBy = {Id:Number(emp.employee.id), Name:String(emp.employee.name || ''), Type:'employee'};
+    row.requestedBy = emp.employee.name + ' (' + emp.employee.id + ')';
     row.payload = payload;
     if (cfgS.write !== true) { row.status = 'PREVIEW_ONLY'; out.push(row); return; }
     const json = tmv3_fetchJson_(TMV3.API_BASE + '/v2/tasks', {method:'post', contentType:'application/json', payload:JSON.stringify(payload)});
@@ -819,8 +829,9 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
     out.push(row);
   });
   Logger.log('PI_SPECIAL_INSTALL=' + JSON.stringify({customer:cfgS.customerId + ' ' + custName, taskType:typeId + ' ' + typeName,
-    location:loc ? loc['Location ID'] : 'none (customer has ' + locs.length + ')', write:cfgS.write === true, events:out.map(function(r) {
-      return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', payloadTitle:r.payload && r.payload.Title};
+    location:loc ? loc['Location ID'] + ' ' + text(loc).replace(/\s+/g, ' ').slice(0, 120) : 'none (customer has ' + locs.length + ', ' + matched.length + ' match "' + cfgS.locationMatch + '")',
+    allLocations:locs.map(function(r) { return r['Location ID'] + ' ' + text(r).replace(/\s+/g, ' ').slice(0, 90); }), write:cfgS.write === true, events:out.map(function(r) {
+      return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', requestedBy:r.requestedBy || '', payloadTitle:r.payload && r.payload.Title};
     })}));
   return out;
 }
