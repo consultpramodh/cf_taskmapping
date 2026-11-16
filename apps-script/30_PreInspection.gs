@@ -2630,10 +2630,24 @@ function tmv3_preInspectionContinueEligibleSweep() {
   const run = function(extra) {
     return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
   };
-  let result = run();
-  // Run by hand with no unfinished sweep: start a fresh one so every eligible event is checked now.
-  if (result.status === 'NO_ACTIVE_PREINSPECTION_SWEEP') result = run({sweepContinue:false,sweepStart:true,reason:'SWEEP_FOLLOW_ON_FRESH'});
-  while (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) result = run();
+  // No unfinished sweep (e.g. the slot never got the lock): start a fresh one. Lock retries keep
+  // the same mode, so a retry never falls back to "continue" a sweep that does not exist.
+  const fresh = {sweepContinue:false,sweepStart:true,reason:'SWEEP_FOLLOW_ON_FRESH'};
+  let mode = {}, result;
+  try {
+    result = run(mode);
+    for (;;) {
+      if (result.status === 'NO_ACTIVE_PREINSPECTION_SWEEP' && mode !== fresh) { mode = fresh; result = run(mode); continue; }
+      if (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) { result = run(mode); continue; }
+      break;
+    }
+  } catch (err) {
+    // A crash must never be silent: log it and try again a minute later.
+    const error = String(err && err.message || err).slice(0, 300);
+    let next = ''; try { next = tmv3_preInspectionScheduleNextSweep_(); } catch (ignored) {}
+    tmv3_preInspectionLogSweep_('FOLLOW_ON', {status:'ATTENTION',error:error,continuation:next,processed:0,writes:0,results:[]});
+    return {status:'ATTENTION',error:error,continuation:next};
+  }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),results:(result.results || []).slice()};
   let prior = result.sweep && result.sweep.remaining;
   while (result.sweep && result.sweep.remaining > 0 && result.processed > 0 && result.status !== 'API_BUDGET_WAIT' &&

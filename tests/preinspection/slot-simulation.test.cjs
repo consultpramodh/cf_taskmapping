@@ -125,3 +125,26 @@ console.log('PASS: slot simulation evaluates all events, records writes/emails, 
   a6.deepEqual(seen, ['CONTINUE', 'START']); a6.equal(out.writes, 1);
   console.log('PASS: follow-on with no unfinished sweep starts a fresh one');
 }
+
+// 2026-11-15 17:09 bug: slot never got the lock; follow-on fresh start hit LOCK_BUSY, and the retry
+// fell back to "continue" -> NO_ACTIVE. Retries must keep the fresh-start mode.
+{
+  const p7 = require('node:path'), h7 = require('./harness.cjs'), a7 = require('node:assert/strict');
+  const c7 = h7.load(p7.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-15T22:09:00Z')}).ctx;
+  c7.tmv3_audit_ = () => {}; c7.tmv3_preInspectionRefreshOperatorView_ = () => ({status: 'OK'});
+  const seen = []; let n = 0;
+  c7.tmv3_preInspectionAutomationCycle_ = o => { n++; seen.push(o.sweepStart === true ? 'START' : 'CONTINUE');
+    if (o.sweepStart !== true) return {status: 'NO_ACTIVE_PREINSPECTION_SWEEP', processed: 0, writes: 0};
+    return n < 4 ? {status: 'LOCK_BUSY', writes: 0} : {status: 'COMPLETE', processed: 3, writes: 2, results: [], sweep: {remaining: 0}}; };
+  const out = c7.tmv3_preInspectionContinueEligibleSweep();
+  a7.equal(seen.join(','), 'CONTINUE,START,START,START'); a7.equal(out.writes, 2);
+  // A crash is logged and retried, never silent.
+  const logged = [], made = [];
+  c7.tmv3_audit_ = function() { logged.push(Array.from(arguments)); };
+  c7.ScriptApp.getProjectTriggers = () => []; c7.ScriptApp.newTrigger = h => ({timeBased: () => ({after: () => ({create: () => made.push(h)})})});
+  c7.tmv3_preInspectionAutomationCycle_ = () => { throw new Error('boom'); };
+  const bad = c7.tmv3_preInspectionContinueEligibleSweep();
+  a7.equal(bad.status, 'ATTENTION'); a7.equal(made[0], 'tmv3_preInspectionContinueEligibleSweep');
+  a7.ok(logged.some(l => l[3] === 'PREINSPECTION_SWEEP' && /boom/.test(l[5])));
+  console.log('PASS: follow-on keeps fresh-start mode through lock retries; crashes are logged and retried');
+}
