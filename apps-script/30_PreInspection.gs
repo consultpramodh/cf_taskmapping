@@ -2288,7 +2288,9 @@ function tmv3_piCycleBody_(cycle) {
   }
   props.setProperty('TMV3_PI_LAST_CYCLE', String(cycle.now));
   // Cache-age gates and last-good policy; a refresh failure stops before creates or emails.
-  tmv3_refreshOperationalSourcesIfNeeded_(120, false);
+  // Follow-on runs never start the big Striven report refresh (it held the lock 30 min on
+  // 2026-11-16 08:09 and timed out); they use the slot's cache, and every write still re-reads Striven.
+  if (options.skipSourceRefresh !== true) tmv3_refreshOperationalSourcesIfNeeded_(120, false);
   cycle.pending = JSON.parse(props.getProperty('TMV3_PI_PENDING_EVENTS') || '[]');
   if (!scopeEventId) tmv3_piRecoverPendingEvents_(cycle, records);
 
@@ -2628,7 +2630,7 @@ function tmv3_preInspectionContinueEligibleSweep() {
   tmv3_piAssertLockedStandard_();
   const started = Date.now(), deadline = started + 240000;
   const run = function(extra) {
-    return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
+    return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,skipSourceRefresh:true,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
   };
   // No unfinished sweep (e.g. the slot never got the lock): start a fresh one. Lock retries keep
   // the same mode, so a retry never falls back to "continue" a sweep that does not exist.

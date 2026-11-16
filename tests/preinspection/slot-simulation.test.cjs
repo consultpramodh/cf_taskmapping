@@ -148,3 +148,15 @@ console.log('PASS: slot simulation evaluates all events, records writes/emails, 
   a7.ok(logged.some(l => l[3] === 'PREINSPECTION_SWEEP' && /boom/.test(l[5])));
   console.log('PASS: follow-on keeps fresh-start mode through lock retries; crashes are logged and retried');
 }
+
+// 2026-11-16 08:09: a follow-on started the full Striven report refresh and timed out after 30 min.
+{
+  const p8 = require('node:path'), h8 = require('./harness.cjs'), a8 = require('node:assert/strict');
+  const c8 = h8.load(p8.resolve(__dirname, '..', '..', 'apps-script'), {fixedNow: Date.parse('2026-11-16T13:09:00Z')}).ctx;
+  c8.tmv3_audit_ = () => {}; c8.tmv3_preInspectionRefreshOperatorView_ = () => ({status: 'OK'});
+  const opts = [];
+  c8.tmv3_preInspectionAutomationCycle_ = o => { opts.push(o); return {status: 'COMPLETE', processed: 1, writes: 0, results: [], sweep: {remaining: 0}}; };
+  c8.tmv3_preInspectionContinueEligibleSweep();
+  a8.ok(opts.length && opts.every(o => o.skipSourceRefresh === true), 'follow-on never refreshes Striven reports');
+  console.log('PASS: follow-on skips the Striven report refresh');
+}
