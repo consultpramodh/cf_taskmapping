@@ -107,9 +107,9 @@ console.log('PASS: slot simulation evaluates all events, records writes/emails, 
   };
   const out = c3.tmv3_preInspectionContinueEligibleSweep();
   assert3.equal(out.writes, 3); assert3.equal(out.processed, 5); assert3.equal(made.length, 1, 'done: no further follow-on');
-  for (let i = 0; i < 12; i++) c3.tmv3_preInspectionScheduleNextSweep_();
+  for (let i = 0; i < 40; i++) c3.tmv3_preInspectionScheduleNextSweep_();
   assert3.equal(c3.tmv3_preInspectionScheduleNextSweep_(), 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT');
-  console.log('PASS: unfinished sweep continues in follow-on runs until done (max 12 a day)');
+  console.log('PASS: unfinished sweep continues in follow-on runs until done (max 40 a day)');
 }
 
 // Follow-on run with no unfinished sweep starts a fresh sweep.

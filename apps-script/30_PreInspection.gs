@@ -44,7 +44,7 @@ var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;
 // Task write per batch is off; a per-slot time limit keeps the run inside Apps Script's 6 minutes.
 var TMV3_PI_ONE_WRITE_PER_BATCH = false;
 // When a slot runs out of time, the rest of the sweep continues 1 minute later in a short follow-on
-// run (one-off trigger), repeated until every eligible event is done. Max 12 follow-ons a day.
+// run (one-off trigger), repeated until every eligible event is done. Max 40 follow-ons a day.
 var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
 // Requested By = the employee who created the event; the calendar owner only as a fallback.
 var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
@@ -2682,14 +2682,14 @@ function tmv3_preInspectionContinueEligibleSweep() {
   return result;
 }
 
-/** Schedules one follow-on run in 1 minute (never more than one pending, at most 12 a day). */
+/** Schedules one follow-on run in 1 minute (never more than one pending, at most 40 a day). */
 function tmv3_preInspectionScheduleNextSweep_() {
   if (TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE !== true) return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
   const store = tmv3_piEphemeral_();
   const day = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
   const key = 'TMV3_PI_FOLLOW_ON_COUNT_' + day;
   const count = Number(store.get(key) || 0);
-  if (count >= 12) return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
+  if (count >= 40) return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
   tmv3_preInspectionClearContinuationTrigger_();
   ScriptApp.newTrigger('tmv3_preInspectionContinueEligibleSweep').timeBased().after(60000).create();
   store.set(key, String(count + 1), 21600);
