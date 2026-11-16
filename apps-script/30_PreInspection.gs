@@ -52,6 +52,12 @@ var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
 var TMV3_PI_BLANK_LINE_BEFORE_LINKS = true;
 // Run the slow SO ship-to Location repair only when the blocker is about the Location.
 var TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY = true;
+// Operator rule 2026-11-16: the scheduled runs check and correct events in the next 14 days
+// (was the config's 365). 0 = use TMV3.VERTICALS.PreInspection.lookaheadDays.
+var TMV3_PI_LOOKAHEAD_DAYS = 14;
+function tmv3_piLookaheadDays_() {
+  return TMV3_PI_LOOKAHEAD_DAYS > 0 ? TMV3_PI_LOOKAHEAD_DAYS : Math.max(1, Number(TMV3.VERTICALS.PreInspection.lookaheadDays || 365));
+}
 // Subject "[PRE-INSPECTION]" + header label (shared TMV3_NOTIFICATION_BRANDS); added at send time.
 var TMV3_PI_VERTICAL_BRANDING = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
@@ -316,7 +322,7 @@ function tmv3_preInspectionIntakeRecords_(options) {
   });
   if (sources.length !== 1) throw new Error('PI_AUTHORITATIVE_SOURCE_NOT_UNIQUE');
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const end = new Date(today); end.setDate(end.getDate() + Math.max(1, Number(cfg.lookaheadDays || 365)));
+  const end = new Date(today); end.setDate(end.getDate() + tmv3_piLookaheadDays_());
   const primary = CalendarApp.getCalendarById(cfg.primaryCalendarId);
   if (!primary) throw new Error('PI_PRIMARY_CALENDAR_INACCESSIBLE');
   const records = primary.getEvents(today, end).map(function(ev) {
@@ -354,7 +360,7 @@ function tmv3_preInspectionTargetedIntake_(eventId, props) {
   const start = new Date(record.start);
   if (!isFinite(start.getTime()) || record.status === 'cancelled') throw new Error('TARGET_EVENT_INVALID_OR_CANCELLED');
   const first = new Date(); first.setHours(0, 0, 0, 0);
-  const last = new Date(first); last.setDate(last.getDate() + Number(TMV3.VERTICALS.PreInspection.lookaheadDays || 365));
+  const last = new Date(first); last.setDate(last.getDate() + tmv3_piLookaheadDays_());
   if (pending.indexOf(eventId) < 0 && (start < first || start >= last)) return [];
   return [record];
 }
@@ -2456,7 +2462,7 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
   const primary = CalendarApp.getCalendarById(cfg.primaryCalendarId);
   if (!primary) throw new Error('PI_PRIMARY_CALENDAR_INACCESSIBLE');
   const from = new Date(); from.setHours(0, 0, 0, 0);
-  const until = new Date(from); until.setDate(until.getDate() + 31);
+  const until = new Date(from); until.setDate(until.getDate() + (TMV3_PI_LOOKAHEAD_DAYS > 0 ? TMV3_PI_LOOKAHEAD_DAYS : 31));
   const shared = {};
   primary.getEvents(from, until).forEach(function(ev) { shared[String(ev.getId()).replace(/@google\.com$/i, '')] = true; });
   const maxLive = Math.max(0, Number(options.maxLiveChecks || 12));
@@ -3073,7 +3079,7 @@ function tmv3_piCalendarReviewRefresh_() {
     if (!sheet) throw new Error('PI_REVIEW_SHEET_NOT_FOUND_NO_WRITE');
     const timezone = 'America/Toronto';
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const until = new Date(today.getTime()); until.setDate(until.getDate() + 31);
+    const until = new Date(today.getTime()); until.setDate(until.getDate() + (TMV3_PI_LOOKAHEAD_DAYS > 0 ? TMV3_PI_LOOKAHEAD_DAYS : 31));
     const checkedDate = Utilities.formatDate(today, timezone, 'yyyy-MM-dd');
     const copiesByKey = {};
     const sourceCounts = {};
@@ -3226,7 +3232,7 @@ function tmv3_preInspectionRefreshOperatorView_() {
     const calendar = CalendarApp.getCalendarById(cfg.primaryCalendarId);
     if (!calendar) throw new Error('PI_OPERATOR_PRIMARY_CALENDAR_NOT_ACCESSIBLE');
     const start = new Date(); start.setHours(0, 0, 0, 0);
-    const end = new Date(start); end.setDate(end.getDate() + Math.max(1, Number(cfg.lookaheadDays || 365)));
+    const end = new Date(start); end.setDate(end.getDate() + tmv3_piLookaheadDays_());
     const step1 = calendar.getEvents(start, end).map(function(event) {
       return tmv3_calendarEvent_('PreInspection', cfg, source, event, {applyEligibility:false});
     }).filter(function(x) { return x && !tmv3_step2PreInspectionNonCustomer_(x); });

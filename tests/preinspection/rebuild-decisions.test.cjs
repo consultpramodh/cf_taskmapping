@@ -94,3 +94,11 @@ assert.equal(payload({nested:[{fieldId:854,value:'private'}]},'PATCH').decision,
   a9.equal(vm9.runInContext('TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY', c9), true);
   console.log('PASS: order evidence repair limited to Location blockers');
 }
+
+// Scheduled runs look 14 days ahead.
+{
+  const pA = require('node:path'), hA = require('./harness.cjs'), aA = require('node:assert/strict');
+  const cA = hA.load(pA.resolve(__dirname, '..', '..', 'apps-script')).ctx;
+  aA.equal(cA.tmv3_piLookaheadDays_(), 14);
+  console.log('PASS: PreInspection look-ahead is 14 days');
+}
