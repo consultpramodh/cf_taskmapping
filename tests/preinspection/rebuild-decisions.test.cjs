@@ -84,3 +84,13 @@ assert.equal(payload({nested:[{fieldId:854,value:'private'}]},'PATCH').decision,
     'owner is the fallback when the creator is not an employee');
   console.log('PASS: Requested By is the event creator; owner only as fallback');
 }
+
+// Slow SO ship-to Location repair runs only for Location blockers (not "multiple open Tasks").
+{
+  const p9 = require('node:path'), h9 = require('./harness.cjs'), a9 = require('node:assert/strict'), vm9 = require('node:vm');
+  const src = require('node:fs').readFileSync(p9.resolve(__dirname, '..', '..', 'apps-script', '30_PreInspection.gs'), 'utf8');
+  a9.match(src, /locationBlocker = TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY !== true \|\| \/location\/i\.test/);
+  const c9 = h9.load(p9.resolve(__dirname, '..', '..', 'apps-script')).ctx;
+  a9.equal(vm9.runInContext('TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY', c9), true);
+  console.log('PASS: order evidence repair limited to Location blockers');
+}

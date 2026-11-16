@@ -50,6 +50,8 @@ var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
 var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
 // One empty line between the event notes and "-----Striven Links-----" (operator rule 2026-11-13).
 var TMV3_PI_BLANK_LINE_BEFORE_LINKS = true;
+// Run the slow SO ship-to Location repair only when the blocker is about the Location.
+var TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY = true;
 // Subject "[PRE-INSPECTION]" + header label (shared TMV3_NOTIFICATION_BRANDS); added at send time.
 var TMV3_PI_VERTICAL_BRANDING = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
@@ -2109,7 +2111,10 @@ function tmv3_piReconcileAuthoritativeEvent_(cycle, record, one, doneKey) {
 
   // F1 plan from fresh evidence; optional SO ship-to may repair an ambiguous Location.
   let plans = tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
-  if (plans.length === 1 && plans[0].blocker && !tmv3_preInspectionHistoricalCoverageVerified_(plans[0])) {
+  // The SO ship-to step only repairs an unclear Location. It rebuilds whole-report indexes, so it is
+  // skipped for other blockers (BKDP "multiple open Tasks" took ~20 min on 2026-11-16).
+  const locationBlocker = TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY !== true || /location/i.test(String(plans[0] && plans[0].blocker || ''));
+  if (plans.length === 1 && plans[0].blocker && locationBlocker && !tmv3_preInspectionHistoricalCoverageVerified_(plans[0])) {
     one.optionalOrderEvidence = tmv3_preInspectionOptionalOrderLocationEvidence_(record);
     if (one.optionalOrderEvidence.status === 'CACHE_REPAIRED') plans = tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
   }
