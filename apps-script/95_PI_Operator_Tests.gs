@@ -762,6 +762,7 @@ function piTest_specialInstallSettings_() {
     customerId: 61681,                 // 33 Chatsworth Limited Partnership
     templateTaskId: 19491,             // an existing Installation Task: copies its Task Type only
     lookaheadDays: 120,
+    locationMatch: 'Chatsworth',       // when the customer has several locations
     write: false                       // set true to create the Tasks and link them
   };
 }
@@ -785,7 +786,10 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
   const custName = String(tmv3_first_(cust, ['Name','name']) || '');
   // Location only when the customer has exactly one in the cache.
   const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(cfgS.customerId); });
-  const loc = locs.length === 1 ? locs[0] : null;
+  // Several locations: use the one whose name/address contains locationMatch (only if exactly one does).
+  const text = function(r) { return Object.keys(r).map(function(k) { return String(r[k] || ''); }).join(' '); };
+  const matched = cfgS.locationMatch ? locs.filter(function(r) { return text(r).toLowerCase().indexOf(cfgS.locationMatch.toLowerCase()) >= 0; }) : [];
+  const loc = locs.length === 1 ? locs[0] : matched.length === 1 ? matched[0] : null;
   const out = [];
   events.forEach(function(ev) {
     const desc = String(ev.getDescription() || '');
@@ -819,7 +823,8 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
     out.push(row);
   });
   Logger.log('PI_SPECIAL_INSTALL=' + JSON.stringify({customer:cfgS.customerId + ' ' + custName, taskType:typeId + ' ' + typeName,
-    location:loc ? loc['Location ID'] : 'none (customer has ' + locs.length + ')', write:cfgS.write === true, events:out.map(function(r) {
+    location:loc ? loc['Location ID'] + ' ' + text(loc).replace(/\s+/g, ' ').slice(0, 120) : 'none (customer has ' + locs.length + ', ' + matched.length + ' match "' + cfgS.locationMatch + '")',
+    allLocations:locs.map(function(r) { return r['Location ID'] + ' ' + text(r).replace(/\s+/g, ' ').slice(0, 90); }), write:cfgS.write === true, events:out.map(function(r) {
       return {date:r.date, title:r.title, status:r.status, taskId:r.taskId || '', payloadTitle:r.payload && r.payload.Title};
     })}));
   return out;
