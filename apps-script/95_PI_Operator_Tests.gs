@@ -990,7 +990,8 @@ function piTest_WRITE_CreatePreInspectionTask() {
   if (pick.length !== 1) throw new Error('LOCATION_NOT_UNIQUE: ' + pick.length + ' of ' + locs.length + ' match. Set locationId to one of: ' +
     (matched.length ? matched : locs).map(function(r) { return r['Location ID'] + ' = ' + text(r).replace(/\s+/g, ' ').slice(0, 80); }).join(' || '));
   const loc = pick[0];
-  const addr = (text(loc).match(/\d+[^,]*,\s*[^,]+/) || [''])[0].replace(/\s+/g, ' ').trim();   // "35 Mill St E, City"
+  // Street number followed by a street name (skips the Location / Customer IDs before it), then the city.
+  const addr = (text(loc).match(/\b\d+[A-Za-z]?\s+[A-Za-z][^,]*,\s*[^,]+/) || [''])[0].replace(/\s+/g, ' ').trim();   // "35 Mill St E, City"
   const creator = String((ev.getCreators() || [])[0] || '').toLowerCase();
   const emp = tmv3_resolveOrganizerEmployee_({organizer:creator});
   if (!emp || emp.status !== 'MATCHED') throw new Error('REQUESTED_BY_NOT_AN_EMPLOYEE: ' + creator);
