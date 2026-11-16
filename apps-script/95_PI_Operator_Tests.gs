@@ -967,7 +967,8 @@ function piTest_piCreateSettings_() {
     customerId: 49965,                                  // Two Birds - Andi
     customerName: 'Andi Wheelband',
     phone: '(647) 202-8414',
-    locationMatch: 'Mill',                              // 35 Mill St E
+    locationMatch: '35 Mill',                           // 35 Mill St E (customer has 11 locations)
+    locationId: 0,                                      // set to force one Location ID
     templateTaskId: 19885,                              // an existing Pre-Inspection Task (type only)
     write: false
   };
@@ -984,8 +985,11 @@ function piTest_WRITE_CreatePreInspectionTask() {
   const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(S.customerId); });
   const text = function(r) { return Object.keys(r).map(function(k) { return String(r[k] || ''); }).join(' '); };
   const matched = locs.filter(function(r) { return text(r).toLowerCase().indexOf(S.locationMatch.toLowerCase()) >= 0; });
-  if (matched.length !== 1) throw new Error('LOCATION_NOT_UNIQUE: ' + matched.length + ' of ' + locs.length + ' match "' + S.locationMatch + '"');
-  const loc = matched[0];
+  const forced = S.locationId ? locs.filter(function(r) { return Number(r['Location ID']) === Number(S.locationId); }) : [];
+  const pick = S.locationId ? forced : matched;
+  if (pick.length !== 1) throw new Error('LOCATION_NOT_UNIQUE: ' + pick.length + ' of ' + locs.length + ' match. Set locationId to one of: ' +
+    (matched.length ? matched : locs).map(function(r) { return r['Location ID'] + ' = ' + text(r).replace(/\s+/g, ' ').slice(0, 80); }).join(' || '));
+  const loc = pick[0];
   const addr = (text(loc).match(/\d+[^,]*,\s*[^,]+/) || [''])[0].replace(/\s+/g, ' ').trim();   // "35 Mill St E, City"
   const creator = String((ev.getCreators() || [])[0] || '').toLowerCase();
   const emp = tmv3_resolveOrganizerEmployee_({organizer:creator});
