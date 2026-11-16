@@ -19,6 +19,7 @@
 //   piTest_SendMissingLinksNow()      sends that list to Pramodh now (same email as the daily 13:00 one)
 //   piTest_WRITE_CreateSpecialInstallTasks()  one Installation Task per special-project event (preview unless write:true)
 //   piTest_AuditPreinspects120()      READ-ONLY: 120 days of CF Preinspects vs Striven (links, date/time, customer #, address)
+//   piTest_WRITE_FixAudit120()        fixes Task dates/times + plain-text Task links (preview unless write:true)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -878,5 +879,79 @@ function piTest_AuditPreinspects120() {
   out.forEach(function(r) { Logger.log('PI_AUDIT120 ' + r.when + ' | ' + r.title + ' | ' + r.by + ' | ' + r.issues.join('; ')); });
   Logger.log('PI_AUDIT120_SUMMARY=' + JSON.stringify({checked:checked, withIssues:out.length, stoppedEarlyAt5min:stoppedEarly,
     dateTimeMismatches:out.filter(function(r) { return r.issues.some(function(i) { return / vs event|NO start|NO due/.test(i); }); }).length}));
+  return out;
+}
+
+/** Fixes from piTest_AuditPreinspects120 (preview unless write:true):
+ *  1) Task start/due set to the event's times when they really differ (checked with the automation's
+ *     canonical v1 schedule, so Striven's v2 AM/PM display bug is never "fixed").
+ *  2) Plain-text "Task #NNNNN" made a clickable link, after checking in Striven that it is a
+ *     Pre-Inspection Task for the customer # in the title. Written on the organizer copy. */
+function piTest_auditFixSettings_() { return {daysBack:120, daysAhead:30, write:false}; }
+
+function piTest_WRITE_FixAudit120() {
+  const S = piTest_auditFixSettings_();
+  const cfg = TMV3.VERTICALS.PreInspection;
+  const shared = CalendarApp.getCalendarById(cfg.primaryCalendarId);
+  const stephen = CalendarApp.getCalendarById((cfg.secondaryCalendarIds || [])[0]);
+  const from = new Date(); from.setDate(from.getDate() - S.daysBack);
+  const to = new Date(); to.setDate(to.getDate() + S.daysAhead);
+  const fmt = function(d) { return d ? Utilities.formatDate(new Date(d), TMV3_TIMEZONE, 'MMM d h:mm a') : 'none'; };
+  const started = Date.now(), out = [];
+  shared.getEvents(from, to).forEach(function(ev) {
+    if (Date.now() - started > 300000) return;
+    const title = String(ev.getTitle() || ''), desc = String(ev.getDescription() || '');
+    if (ev.isAllDayEvent() || /meeting|do not book|lunch|holiday/i.test(title)) return;
+    const cust = (/^\s*(?:#|C#|Cust#)?\s*(\d{4,6})\b/.exec(title) || [])[1] || '';
+    const ids = (desc.match(/TaskID=(\d+)/g) || []).map(function(x) { return x.replace('TaskID=', ''); });
+    // 1) dates
+    ids.slice(0, 1).forEach(function(id) {
+      let t; try { t = tmv3_getTaskById_(id); } catch (e) { return; }
+      if (Number(t['Task Type ID']) !== 105) return;
+      const chk = tmv3_taskScheduleCheck_('PreInspection', ev.getStartTime(), ev.getEndTime(), id, t);
+      if (chk.startCheck === 'MATCH' && chk.endCheck === 'MATCH') return;
+      const row = {kind:'DATES', when:fmt(ev.getStartTime()), title:title.slice(0, 50), taskId:id, taskStatus:t['Status'],
+        taskNow:fmt(chk.start) + ' – ' + fmt(chk.due), eventIs:fmt(ev.getStartTime()) + ' – ' + fmt(ev.getEndTime())};
+      if (S.write === true) {
+        try {
+          tmv3_operationPatchTask_(id, {Id:Number(id), StartDateTime:tmv3_strivenTaskDateTime_(ev.getStartTime()),
+            DueDateTime:tmv3_strivenTaskDateTime_(ev.getEndTime())}, 'PREINSPECTIONAUTO');
+          const after = tmv3_taskScheduleCheck_('PreInspection', ev.getStartTime(), ev.getEndTime(), id, tmv3_getTaskById_(id));
+          row.result = after.startCheck === 'MATCH' && after.endCheck === 'MATCH' ? 'FIXED_VERIFIED' : 'PATCHED_NOT_VERIFIED';
+          tmv3_audit_('PreInspection', ev.getId(), id, 'AUDIT_FIX_TASK_DATES', row.result, JSON.stringify({from:row.taskNow, to:row.eventIs}));
+        } catch (e) { row.result = 'ERROR: ' + String(e.message || e).slice(0, 120); }
+      } else row.result = 'PREVIEW';
+      out.push(row);
+    });
+    // 2) plain-text Task # -> clickable link
+    const plain = !ids.length && /Task #(\d{4,6})/.exec(tmv3_calendarReadableDescription_(desc));
+    if (plain) {
+      const id = plain[1], row = {kind:'LINK', when:fmt(ev.getStartTime()), title:title.slice(0, 50), taskId:id};
+      let t = null; try { t = tmv3_getTaskById_(id); } catch (e) {}
+      if (!t) row.result = 'SKIPPED: Task #' + id + ' not found';
+      else if (Number(t['Task Type ID']) !== 105) row.result = 'SKIPPED: #' + id + ' is ' + t['Task Type'];
+      else if (!cust || String(t['Customer ID']) !== cust) row.result = 'SKIPPED: #' + id + ' customer ' + t['Customer ID'] + ' ≠ title ' + (cust || 'none');
+      else {
+        const name = (title.split(/\s+-\s+/)[1] || '').trim();
+        const plan = {links:[
+          {key:'ORDER', url:'https://classicfireplace.striven.com/next/crm#/sales-orders?accountId=' + cust, label:'View Sales Orders – ' + name + ' (#' + cust + ')'},
+          {key:'TASK', url:'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=' + id, label:'Task #' + id + ' – ' + t['Name']}]};
+        const organizer = (stephen && stephen.getEventById(ev.getId())) || ev;
+        const next = tmv3_preInspectionClickableManagedDescription_(String(organizer.getDescription() || ''), plan).description;
+        row.taskName = t['Name'];
+        if (S.write === true) {
+          organizer.setDescription(next);
+          Utilities.sleep(2000);
+          row.result = /TaskID=/.test(String(shared.getEventById(ev.getId()).getDescription() || '')) ? 'LINKED_VERIFIED' : 'LINKED_ON_ORGANIZER_COPY';
+          tmv3_audit_('PreInspection', ev.getId(), id, 'AUDIT_FIX_LINK', row.result, t['Name']);
+        } else row.result = 'PREVIEW';
+      }
+      out.push(row);
+    }
+  });
+  out.forEach(function(r) { Logger.log('PI_AUDIT_FIX ' + r.kind + ' | ' + r.when + ' | ' + r.title + ' | #' + r.taskId +
+    (r.kind === 'DATES' ? ' (' + r.taskStatus + ') ' + r.taskNow + ' → ' + r.eventIs : ' ' + (r.taskName || '')) + ' | ' + r.result); });
+  Logger.log('PI_AUDIT_FIX_SUMMARY=' + JSON.stringify({write:S.write === true, dates:out.filter(function(r) { return r.kind === 'DATES'; }).length,
+    links:out.filter(function(r) { return r.kind === 'LINK'; }).length}));
   return out;
 }
