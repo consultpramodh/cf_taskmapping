@@ -18,6 +18,7 @@
 //   piTest_PreviewMissingLinks()      READ-ONLY: events in all 4 workflows with no Striven Task link
 //   piTest_SendMissingLinksNow()      sends that list to Pramodh now (same email as the daily 13:00 one)
 //   piTest_WRITE_CreateSpecialInstallTasks()  one Installation Task per special-project event (preview unless write:true)
+//   piTest_AuditPreinspects120()      READ-ONLY: 120 days of CF Preinspects vs Striven (links, date/time, customer #, address)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -842,3 +843,40 @@ function piTest_WRITE_CreateSpecialInstallTasks() {
   return out;
 }
 
+
+/** READ-ONLY: every CF Preinspects event in the last 120 days (+30 ahead) against its Striven Task,
+ * read fresh: missing link, Task date/time not matching the event, missing customer # / address. */
+function piTest_AuditPreinspects120() {
+  const cal = CalendarApp.getCalendarById(TMV3.VERTICALS.PreInspection.primaryCalendarId);
+  const from = new Date(); from.setDate(from.getDate() - 120);
+  const to = new Date(); to.setDate(to.getDate() + 30);
+  const fmt = function(d) { return d ? Utilities.formatDate(d, TMV3_TIMEZONE, 'MMM d HH:mm') : 'none'; };
+  const started = Date.now(), out = [];
+  let checked = 0, stoppedEarly = false;
+  cal.getEvents(from, to).forEach(function(ev) {
+    if (Date.now() - started > 300000) { stoppedEarly = true; return; }
+    const title = String(ev.getTitle() || ''), desc = String(ev.getDescription() || '');
+    if (ev.isAllDayEvent() || /meeting|do not book|lunch|holiday/i.test(title)) return;
+    checked++;
+    const issues = [];
+    const ids = (desc.match(/TaskID=(\d+)/g) || []).map(function(x) { return x.replace('TaskID=', ''); });
+    if (!ids.length) issues.push('NO TASK LINK' + (/Task #\d{4,6}/.test(desc) ? ' (plain-text Task #)' : ''));
+    if (!/^\s*(?:#|C#|Cust#)?\s*\d{4,6}\b/.test(title)) issues.push('title: no customer #');
+    if (!String(ev.getLocation() || '').trim()) issues.push('no address');
+    ids.slice(0, 2).forEach(function(id) {
+      let t = null;
+      try { t = tmv3_getTaskById_(id); } catch (e) { issues.push('#' + id + ' read failed: ' + String(e.message || e).slice(0, 60)); return; }
+      const ts = t['Start'] ? new Date(t['Start']) : null, te = t['Due'] ? new Date(t['Due']) : null;
+      if (!ts || !isFinite(ts)) issues.push('#' + id + ' has NO start date/time');
+      else if (Math.abs(ts - ev.getStartTime()) > 60000) issues.push('#' + id + ' start ' + fmt(ts) + ' vs event ' + fmt(ev.getStartTime()));
+      if (!te || !isFinite(te)) issues.push('#' + id + ' has NO due date/time');
+      else if (Math.abs(te - ev.getEndTime()) > 60000) issues.push('#' + id + ' due ' + fmt(te) + ' vs event end ' + fmt(ev.getEndTime()));
+      if (Number(t['Task Type ID']) !== 105) issues.push('#' + id + ' type ' + t['Task Type']);
+    });
+    if (issues.length) out.push({when:fmt(ev.getStartTime()), title:title.slice(0, 60), by:String((ev.getCreators() || [])[0] || '').split('@')[0], issues:issues});
+  });
+  out.forEach(function(r) { Logger.log('PI_AUDIT120 ' + r.when + ' | ' + r.title + ' | ' + r.by + ' | ' + r.issues.join('; ')); });
+  Logger.log('PI_AUDIT120_SUMMARY=' + JSON.stringify({checked:checked, withIssues:out.length, stoppedEarlyAt5min:stoppedEarly,
+    dateTimeMismatches:out.filter(function(r) { return r.issues.some(function(i) { return / vs event|NO start|NO due/.test(i); }); }).length}));
+  return out;
+}
