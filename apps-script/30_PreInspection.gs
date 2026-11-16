@@ -50,6 +50,14 @@ var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
 var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
 // One empty line between the event notes and "-----Striven Links-----" (operator rule 2026-11-13).
 var TMV3_PI_BLANK_LINE_BEFORE_LINKS = true;
+// Run the slow SO ship-to Location repair only when the blocker is about the Location.
+var TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY = true;
+// Operator rule 2026-11-16: the scheduled runs check and correct events in the next 14 days
+// (was the config's 365). 0 = use TMV3.VERTICALS.PreInspection.lookaheadDays.
+var TMV3_PI_LOOKAHEAD_DAYS = 14;
+function tmv3_piLookaheadDays_() {
+  return TMV3_PI_LOOKAHEAD_DAYS > 0 ? TMV3_PI_LOOKAHEAD_DAYS : Math.max(1, Number(TMV3.VERTICALS.PreInspection.lookaheadDays || 365));
+}
 // Subject "[PRE-INSPECTION]" + header label (shared TMV3_NOTIFICATION_BRANDS); added at send time.
 var TMV3_PI_VERTICAL_BRANDING = true;
 // People who share each other's bookings: an event created by one emails both (operator rule 2026-11-12).
@@ -314,7 +322,7 @@ function tmv3_preInspectionIntakeRecords_(options) {
   });
   if (sources.length !== 1) throw new Error('PI_AUTHORITATIVE_SOURCE_NOT_UNIQUE');
   const today = new Date(); today.setHours(0, 0, 0, 0);
-  const end = new Date(today); end.setDate(end.getDate() + Math.max(1, Number(cfg.lookaheadDays || 365)));
+  const end = new Date(today); end.setDate(end.getDate() + tmv3_piLookaheadDays_());
   const primary = CalendarApp.getCalendarById(cfg.primaryCalendarId);
   if (!primary) throw new Error('PI_PRIMARY_CALENDAR_INACCESSIBLE');
   const records = primary.getEvents(today, end).map(function(ev) {
@@ -352,7 +360,7 @@ function tmv3_preInspectionTargetedIntake_(eventId, props) {
   const start = new Date(record.start);
   if (!isFinite(start.getTime()) || record.status === 'cancelled') throw new Error('TARGET_EVENT_INVALID_OR_CANCELLED');
   const first = new Date(); first.setHours(0, 0, 0, 0);
-  const last = new Date(first); last.setDate(last.getDate() + Number(TMV3.VERTICALS.PreInspection.lookaheadDays || 365));
+  const last = new Date(first); last.setDate(last.getDate() + tmv3_piLookaheadDays_());
   if (pending.indexOf(eventId) < 0 && (start < first || start >= last)) return [];
   return [record];
 }
@@ -2109,7 +2117,10 @@ function tmv3_piReconcileAuthoritativeEvent_(cycle, record, one, doneKey) {
 
   // F1 plan from fresh evidence; optional SO ship-to may repair an ambiguous Location.
   let plans = tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
-  if (plans.length === 1 && plans[0].blocker && !tmv3_preInspectionHistoricalCoverageVerified_(plans[0])) {
+  // The SO ship-to step only repairs an unclear Location. It rebuilds whole-report indexes, so it is
+  // skipped for other blockers (BKDP "multiple open Tasks" took ~20 min on 2026-11-16).
+  const locationBlocker = TMV3_PI_ORDER_EVIDENCE_LOCATION_ONLY !== true || /location/i.test(String(plans[0] && plans[0].blocker || ''));
+  if (plans.length === 1 && plans[0].blocker && locationBlocker && !tmv3_preInspectionHistoricalCoverageVerified_(plans[0])) {
     one.optionalOrderEvidence = tmv3_preInspectionOptionalOrderLocationEvidence_(record);
     if (one.optionalOrderEvidence.status === 'CACHE_REPAIRED') plans = tmv3_step7FreshPlansForEvent_('PreInspection', record.eventId);
   }
@@ -2288,7 +2299,9 @@ function tmv3_piCycleBody_(cycle) {
   }
   props.setProperty('TMV3_PI_LAST_CYCLE', String(cycle.now));
   // Cache-age gates and last-good policy; a refresh failure stops before creates or emails.
-  tmv3_refreshOperationalSourcesIfNeeded_(120, false);
+  // Follow-on runs never start the big Striven report refresh (it held the lock 30 min on
+  // 2026-11-16 08:09 and timed out); they use the slot's cache, and every write still re-reads Striven.
+  if (options.skipSourceRefresh !== true) tmv3_refreshOperationalSourcesIfNeeded_(120, false);
   cycle.pending = JSON.parse(props.getProperty('TMV3_PI_PENDING_EVENTS') || '[]');
   if (!scopeEventId) tmv3_piRecoverPendingEvents_(cycle, records);
 
@@ -2449,7 +2462,7 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
   const primary = CalendarApp.getCalendarById(cfg.primaryCalendarId);
   if (!primary) throw new Error('PI_PRIMARY_CALENDAR_INACCESSIBLE');
   const from = new Date(); from.setHours(0, 0, 0, 0);
-  const until = new Date(from); until.setDate(until.getDate() + 31);
+  const until = new Date(from); until.setDate(until.getDate() + (TMV3_PI_LOOKAHEAD_DAYS > 0 ? TMV3_PI_LOOKAHEAD_DAYS : 31));
   const shared = {};
   primary.getEvents(from, until).forEach(function(ev) { shared[String(ev.getId()).replace(/@google\.com$/i, '')] = true; });
   const maxLive = Math.max(0, Number(options.maxLiveChecks || 12));
@@ -2628,12 +2641,26 @@ function tmv3_preInspectionContinueEligibleSweep() {
   tmv3_piAssertLockedStandard_();
   const started = Date.now(), deadline = started + 240000;
   const run = function(extra) {
-    return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
+    return tmv3_preInspectionAutomationCycle_(Object.assign({force:true,sweepContinue:true,deadline:deadline,skipSourceRefresh:true,reason:'SWEEP_FOLLOW_ON'}, extra || {}));
   };
-  let result = run();
-  // Run by hand with no unfinished sweep: start a fresh one so every eligible event is checked now.
-  if (result.status === 'NO_ACTIVE_PREINSPECTION_SWEEP') result = run({sweepContinue:false,sweepStart:true,reason:'SWEEP_FOLLOW_ON_FRESH'});
-  while (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) result = run();
+  // No unfinished sweep (e.g. the slot never got the lock): start a fresh one. Lock retries keep
+  // the same mode, so a retry never falls back to "continue" a sweep that does not exist.
+  const fresh = {sweepContinue:false,sweepStart:true,reason:'SWEEP_FOLLOW_ON_FRESH'};
+  let mode = {}, result;
+  try {
+    result = run(mode);
+    for (;;) {
+      if (result.status === 'NO_ACTIVE_PREINSPECTION_SWEEP' && mode !== fresh) { mode = fresh; result = run(mode); continue; }
+      if (result.status === 'LOCK_BUSY' && Date.now() - started < 150000) { result = run(mode); continue; }
+      break;
+    }
+  } catch (err) {
+    // A crash must never be silent: log it and try again a minute later.
+    const error = String(err && err.message || err).slice(0, 300);
+    let next = ''; try { next = tmv3_preInspectionScheduleNextSweep_(); } catch (ignored) {}
+    tmv3_preInspectionLogSweep_('FOLLOW_ON', {status:'ATTENTION',error:error,continuation:next,processed:0,writes:0,results:[]});
+    return {status:'ATTENTION',error:error,continuation:next};
+  }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),results:(result.results || []).slice()};
   let prior = result.sweep && result.sweep.remaining;
   while (result.sweep && result.sweep.remaining > 0 && result.processed > 0 && result.status !== 'API_BUDGET_WAIT' &&
@@ -3052,7 +3079,7 @@ function tmv3_piCalendarReviewRefresh_() {
     if (!sheet) throw new Error('PI_REVIEW_SHEET_NOT_FOUND_NO_WRITE');
     const timezone = 'America/Toronto';
     const today = new Date(); today.setHours(0, 0, 0, 0);
-    const until = new Date(today.getTime()); until.setDate(until.getDate() + 31);
+    const until = new Date(today.getTime()); until.setDate(until.getDate() + (TMV3_PI_LOOKAHEAD_DAYS > 0 ? TMV3_PI_LOOKAHEAD_DAYS : 31));
     const checkedDate = Utilities.formatDate(today, timezone, 'yyyy-MM-dd');
     const copiesByKey = {};
     const sourceCounts = {};
@@ -3205,7 +3232,7 @@ function tmv3_preInspectionRefreshOperatorView_() {
     const calendar = CalendarApp.getCalendarById(cfg.primaryCalendarId);
     if (!calendar) throw new Error('PI_OPERATOR_PRIMARY_CALENDAR_NOT_ACCESSIBLE');
     const start = new Date(); start.setHours(0, 0, 0, 0);
-    const end = new Date(start); end.setDate(end.getDate() + Math.max(1, Number(cfg.lookaheadDays || 365)));
+    const end = new Date(start); end.setDate(end.getDate() + tmv3_piLookaheadDays_());
     const step1 = calendar.getEvents(start, end).map(function(event) {
       return tmv3_calendarEvent_('PreInspection', cfg, source, event, {applyEligibility:false});
     }).filter(function(x) { return x && !tmv3_step2PreInspectionNonCustomer_(x); });
