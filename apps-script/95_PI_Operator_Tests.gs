@@ -20,6 +20,7 @@
 //   piTest_WRITE_CreateSpecialInstallTasks()  one Installation Task per special-project event (preview unless write:true)
 //   piTest_AuditPreinspects120()      READ-ONLY: 120 days of CF Preinspects vs Striven (links, date/time, customer #, address)
 //   piTest_WRITE_FixAudit120()        fixes Task dates/times + plain-text Task links (preview unless write:true)
+//   piTest_WRITE_CreatePreInspectionTask()  one PI Task for one event the automation can't choose for (preview unless write:true)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -953,5 +954,67 @@ function piTest_WRITE_FixAudit120() {
     (r.kind === 'DATES' ? ' (' + r.taskStatus + ') ' + r.taskNow + ' → ' + r.eventIs : ' ' + (r.taskName || '')) + ' | ' + r.result); });
   Logger.log('PI_AUDIT_FIX_SUMMARY=' + JSON.stringify({write:S.write === true, dates:out.filter(function(r) { return r.kind === 'DATES'; }).length,
     links:out.filter(function(r) { return r.kind === 'LINK'; }).length}));
+  return out;
+}
+
+/** One Pre-Inspection Task for one CF Preinspects event when the automation cannot choose
+ * (the customer has other, unrelated open Tasks). Same rules as the automation's create:
+ * type 105, blank description, no SO/custom fields, Requested By = event creator employee,
+ * assignments by the automation's own reconciler. Preview unless write:true. */
+function piTest_piCreateSettings_() {
+  return {
+    eventId: '2h29h41f4gb4c5fm1gpin724v2@google.com',  // Andi Wheelband, Nov 20 (her own home)
+    customerId: 49965,                                  // Two Birds - Andi
+    customerName: 'Andi Wheelband',
+    phone: '(647) 202-8414',
+    locationMatch: 'Mill',                              // 35 Mill St E
+    templateTaskId: 19885,                              // an existing Pre-Inspection Task (type only)
+    write: false
+  };
+}
+
+function piTest_WRITE_CreatePreInspectionTask() {
+  const S = piTest_piCreateSettings_();
+  const cfg = TMV3.VERTICALS.PreInspection;
+  const ev = CalendarApp.getCalendarById(cfg.primaryCalendarId).getEventById(S.eventId);
+  if (!ev) throw new Error('EVENT_NOT_ON_CF_PREINSPECTS: ' + S.eventId);
+  if (/TaskID=\d+/.test(String(ev.getDescription() || ''))) { Logger.log('PI_CREATE=ALREADY_LINKED'); return {status:'ALREADY_LINKED'}; }
+  const tpl = tmv3_getTaskById_(S.templateTaskId);
+  if (Number(tpl['Task Type ID']) !== 105) throw new Error('TEMPLATE_NOT_PREINSPECTION');
+  const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(S.customerId); });
+  const text = function(r) { return Object.keys(r).map(function(k) { return String(r[k] || ''); }).join(' '); };
+  const matched = locs.filter(function(r) { return text(r).toLowerCase().indexOf(S.locationMatch.toLowerCase()) >= 0; });
+  if (matched.length !== 1) throw new Error('LOCATION_NOT_UNIQUE: ' + matched.length + ' of ' + locs.length + ' match "' + S.locationMatch + '"');
+  const loc = matched[0];
+  const addr = (text(loc).match(/\d+[^,]*,\s*[^,]+/) || [''])[0].replace(/\s+/g, ' ').trim();   // "35 Mill St E, City"
+  const creator = String((ev.getCreators() || [])[0] || '').toLowerCase();
+  const emp = tmv3_resolveOrganizerEmployee_({organizer:creator});
+  if (!emp || emp.status !== 'MATCHED') throw new Error('REQUESTED_BY_NOT_AN_EMPLOYEE: ' + creator);
+  const title = S.customerName + ' - ' + addr + ' - ' + S.phone;
+  const payload = {Title:title, Type:{Id:105, Name:tpl['Task Type']}, Description:'', Budget:0,
+    StartDateTime:tmv3_strivenTaskDateTime_(ev.getStartTime()), DueDateTime:tmv3_strivenTaskDateTime_(ev.getEndTime()),
+    UseSubContractor:false, Customer:{Id:S.customerId}, Location:{Id:Number(loc['Location ID'])},
+    RequestedBy:{Id:Number(emp.employee.id), Name:String(emp.employee.name || ''), Type:'employee'}};
+  tmv3_piAssertTaskTitle_(title);
+  tmv3_enforcePreInspectionCreatePayloadHardRules_(payload);
+  tmv3_assertPreInspectionCreatePayloadHardRules_(payload);
+  const out = {title:title, location:loc['Location ID'] + ' ' + addr, requestedBy:emp.employee.name, when:ev.getStartTime(), write:S.write === true};
+  if (S.write !== true) { out.status = 'PREVIEW'; Logger.log('PI_CREATE=' + JSON.stringify(out)); return out; }
+  const json = tmv3_fetchJson_(TMV3.API_BASE + '/v2/tasks', {method:'post', contentType:'application/json', payload:JSON.stringify(payload)});
+  const taskId = Number(tmv3_extractCreatedTaskId_(json) || 0);
+  if (!taskId) throw new Error('CREATE_NO_ID_CHECK_STRIVEN');
+  out.taskId = taskId;
+  tmv3_audit_('PreInspection', S.eventId, String(taskId), 'OPERATOR_CREATE_TASK', 'PASS', JSON.stringify(out));
+  try { const rec = tmv3_findFreshEventRecord_('PreInspection', S.eventId);
+    out.assignment = (tmv3_reconcileTaskAssignments_(rec, taskId, 'PREINSPECTIONAUTO') || {}).status; } catch (e) { out.assignment = 'ERROR: ' + String(e.message || e).slice(0, 100); }
+  // Link on the organizer copy.
+  const stephen = CalendarApp.getCalendarById((cfg.secondaryCalendarIds || [])[0]);
+  const organizer = (stephen && stephen.getEventById(S.eventId)) || ev;
+  const plan = {links:[
+    {key:'ORDER', url:'https://classicfireplace.striven.com/next/crm#/sales-orders?accountId=' + S.customerId, label:'View Sales Orders – ' + S.customerName + ' (#' + S.customerId + ')'},
+    {key:'TASK', url:'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=' + taskId, label:'Task #' + taskId + ' – ' + title}]};
+  organizer.setDescription(tmv3_preInspectionClickableManagedDescription_(String(organizer.getDescription() || ''), plan).description);
+  out.status = 'CREATED_AND_LINKED';
+  Logger.log('PI_CREATE=' + JSON.stringify(out));
   return out;
 }
