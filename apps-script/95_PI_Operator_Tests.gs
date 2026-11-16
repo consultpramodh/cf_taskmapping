@@ -1018,7 +1018,15 @@ function piTest_WRITE_CreatePreInspectionTask() {
   const plan = {links:[
     {key:'ORDER', url:'https://classicfireplace.striven.com/next/crm#/sales-orders?accountId=' + S.customerId, label:'View Sales Orders – ' + S.customerName + ' (#' + S.customerId + ')'},
     {key:'TASK', url:'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=' + taskId, label:'Task #' + taskId + ' – ' + title}]};
-  organizer.setDescription(tmv3_preInspectionClickableManagedDescription_(String(organizer.getDescription() || ''), plan).description);
+  // Same title rule as the automation: "Customer # - Name - Phone", old title kept as the first
+  // description line.
+  const oldTitle = String(organizer.getTitle() || '').trim();
+  const newTitle = S.customerId + ' - ' + S.customerName + ' - ' + S.phone;
+  let desc = String(organizer.getDescription() || '');
+  if (oldTitle && oldTitle !== newTitle) desc = tmv3_preInspectionEnsureLegacyTitle_(desc, oldTitle);
+  organizer.setDescription(tmv3_preInspectionClickableManagedDescription_(desc, plan).description);
+  if (oldTitle !== newTitle) organizer.setTitle(newTitle);
+  out.calendarTitle = newTitle;
   out.status = 'CREATED_AND_LINKED';
   Logger.log('PI_CREATE=' + JSON.stringify(out));
   return out;
