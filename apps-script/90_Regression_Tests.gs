@@ -1755,6 +1755,29 @@ function tmv3_titleNormalizationRegression() {
     )
   );
   check(
+    'INSTALL_CUSTOMER_LABEL_TYPO_CUSR_PARSES',
+    tmv3_extractCustomerNumberForVertical_(
+      'Install',
+      'Goldcon cusr#57861 SO 586602 Allan site super 647 564 0071'
+    ) === '57861',
+    tmv3_extractCustomerNumberForVertical_(
+      'Install',
+      'Goldcon cusr#57861 SO 586602 Allan site super 647 564 0071'
+    )
+  );
+  check(
+    'INSTALL_CUSTOMER_LABEL_TYPO_NEEDS_WORD_START',
+    tmv3_extractCustomerNumberForVertical_('Install', 'Focus#12345 install') === '',
+    tmv3_extractCustomerNumberForVertical_('Install', 'Focus#12345 install')
+  );
+  check(
+    'INSTALL_ACCEPTS_DELIVERY_APPROVED_SALES_ORDER',
+    tmv3_step3OrderMatchesVertical_({'Order Type':'DELIVERY_APPROVED'}, 'Install') === true &&
+      tmv3_step3OrderMatchesVertical_({'Order Type':'SALES_ORDER'}, 'Install') === true &&
+      tmv3_step3OrderMatchesVertical_({'Order Type':'WORK_ORDER'}, 'Install') === false,
+    tmv3_step3AllowedOrderTypes_('Install').join('|')
+  );
+  check(
     'PREINSPECTION_CANONICAL_BARE_NUMBER_NAME_EXTRACTION',
     tmv3_preInspectionCalendarCustomerName_(
       '62400 - John Smith - (416) 555-1212',
