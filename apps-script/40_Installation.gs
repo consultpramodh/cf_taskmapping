@@ -180,7 +180,7 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
 
     const when = tmv3_date_(record.start) + ' ' + tmv3_time_(record.start) +
       '–' + tmv3_time_(record.end);
-    const subject = tmv3_brandSubject_('Install', 'ACTION REQUIRED: Sales Order # missing from install event');
+    const subject = 'ACTION REQUIRED: Sales Order # missing from install event';
     const textBody =
       'ACTION REQUIRED\n\n' +
       'The install calendar event below is missing the Sales Order #.\n\n' +
@@ -200,7 +200,7 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
         to: recipients.join(','),
         subject: subject,
         body:'This is an automated email notification from Classic Fireplace & BBQ Store.\n\nHi '+greeting+',\n\n'+textBody,
-        htmlBody:tmv3_brandNotification_('Install',{htmlBody:'x'}).htmlBody.replace(/x$/,'')+'<p><em>This is an automated email notification from Classic Fireplace &amp; BBQ Store.</em></p>'+
+        htmlBody:'<p><em>This is an automated email notification from Classic Fireplace &amp; BBQ Store.</em></p>'+
           '<p>Hi '+esc(greeting)+',</p><p style="color:#B42318;font-weight:700;">Sales Order Number missing</p>'+
           '<p>'+esc(record.title || '(no title)')+'<br>'+esc(when)+'<br>'+esc(record.location || '')+'</p>'+
           '<p>Please add the correct Sales Order number to the appointment.</p>'+
@@ -226,13 +226,13 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
   };
 }
 
-// Install notification — same standard format and dynamic behaviour as the PreInspection
+// Install notice — same standard format and dynamic behaviour as the PreInspection
 // missing-details email (operator rule 2026-11-13). One email per install listing ONLY what is
 // wrong right now: Sales Order # missing, Sales Order not Approved (Quoted / Pending Approval /
 // Incomplete), Sales Order not found in Striven, or job-site address missing. First email and
 // follow-ups use the same timing rules as PreInspection (tmv3_preInspectionNotificationDecision_).
 // While ON, it replaces the older plain "Sales Order # missing" reminder.
-var TMV3_INSTALL_NOTICE_ENABLED = false;   // ON after the TEST email is approved
+var TMV3_INSTALL_NOTICE_ENABLED = false;   // ON after the TEST email is approved (tmv3_installNoticeTestSend)
 const TMV3_INSTALL_SO_NOT_APPROVED = Object.freeze({'18':'incomplete','19':'quoted','20':'pending approval'});
 const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 31;
 // One-off special projects: booked without a Sales Order on purpose (operator 2026-11-13).
@@ -423,6 +423,101 @@ function tmv3_sendInstallNotices_(scope) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Install notice TEST MODE (operator 2026-11-17).
+// Run tmv3_installNoticePreview() for a no-email list, or tmv3_installNoticeTestSend()
+// to receive every notice that WOULD go out right now — addressed only to the test
+// recipient. Test sends write no notice state and no TM State, so the real first-email
+// and follow-up timing are untouched when TMV3_INSTALL_NOTICE_ENABLED is later turned on.
+// Works while TMV3_INSTALL_NOTICE_ENABLED is false. Reads Striven (SO lookups) only.
+// ---------------------------------------------------------------------------
+const TMV3_INSTALL_NOTICE_TEST_MAX_EMAILS = 10;
+
+/** Test recipient: Script Property TMV3_INSTALL_NOTICE_TEST_RECIPIENT, else the person running it. Internal addresses only. */
+function tmv3_installNoticeTestRecipient_() {
+  const configured = PropertiesService.getScriptProperties().getProperty('TMV3_INSTALL_NOTICE_TEST_RECIPIENT') || '';
+  let email = tmv3_normEmail_(configured);
+  if (!email) email = tmv3_normEmail_(tmv3_safeCalendar_(function() { return Session.getActiveUser().getEmail(); }, ''));
+  if (!/^[^@\s,;]+@classicfireplace\.ca$/i.test(email)) {
+    throw new Error('INSTALL_NOTICE_TEST_RECIPIENT_UNVERIFIED: set Script Property TMV3_INSTALL_NOTICE_TEST_RECIPIENT to your @classicfireplace.ca address.');
+  }
+  return email;
+}
+
+/** One summary line per event that would get a notice (shared by preview and test send). */
+function tmv3_installNoticeTestEntry_(record, assessment, email) {
+  const to = email.recipient ? tmv3_piCreatorRecipients_(email.recipient) : [];
+  const cc = (email.cc || []).filter(function(c) { return to.indexOf(String(c).toLowerCase()) < 0; });
+  return {
+    eventId:record.eventId,
+    title:record.title,
+    start:tmv3_iso_(record.start),
+    missing:assessment.missing.map(function(m) { return m.code; }),
+    orderStatus:assessment.order ? assessment.order.status + (assessment.order.statusName ? ' / ' + assessment.order.statusName : '') : 'NOT_LOOKED_UP',
+    wouldGoTo:to.length ? to.join(',') : 'NOBODY — creator unverified, the real run would skip this event',
+    wouldCc:cc.join(','),
+    subject:email.subject
+  };
+}
+
+/** Dry run: lists every Install notice that would go out now. Sends nothing, writes nothing. */
+function tmv3_installNoticePreview() {
+  const out = {status:'PREVIEW',checked:0,needAttention:0,events:[],errors:[]};
+  tmv3_installNoticeRecords_().forEach(function(x) {
+    out.checked++;
+    if (x.error) { out.errors.push({eventId:x.record.eventId,title:x.record.title,error:x.error}); return; }
+    if (!x.assessment.shouldNotify) return;
+    out.needAttention++;
+    out.events.push(tmv3_installNoticeTestEntry_(x.record, x.assessment, tmv3_installNoticeEmail_(x.record, x.assessment, 0)));
+  });
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
+/** TEST send: every would-be notice goes ONLY to the test recipient, with the real recipients shown on top. */
+function tmv3_installNoticeTestSend() {
+  const me = tmv3_installNoticeTestRecipient_();
+  const esc = tmv3_preInspectionHtmlEscape_;
+  const out = {status:'TEST_COMPLETE',testRecipient:me,checked:0,needAttention:0,sent:0,notSent:0,events:[],errors:[]};
+  tmv3_installNoticeRecords_().forEach(function(x) {
+    out.checked++;
+    if (x.error) { out.errors.push({eventId:x.record.eventId,title:x.record.title,error:x.error}); return; }
+    if (!x.assessment.shouldNotify) return;
+    out.needAttention++;
+    const email = tmv3_installNoticeEmail_(x.record, x.assessment, 0);
+    const entry = tmv3_installNoticeTestEntry_(x.record, x.assessment, email);
+    if (out.sent >= TMV3_INSTALL_NOTICE_TEST_MAX_EMAILS || MailApp.getRemainingDailyQuota() < 3) {
+      entry.test = 'NOT_SENT_TEST_CAP'; out.notSent++; out.events.push(entry); return;
+    }
+    const banner =
+      '<div style="background:#fff4cc;border:2px solid #d4a017;padding:12px 16px;margin:12px;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#222;">' +
+      '<strong>TEST ONLY — not sent to staff.</strong><br>' +
+      'Real recipient: <strong>' + esc(entry.wouldGoTo) + '</strong><br>' +
+      'Real CC: ' + esc(entry.wouldCc || '—') + '<br>' +
+      'Striven SO check: ' + esc(entry.orderStatus) + '</div>';
+    const html = String(email.htmlBody || '');
+    const htmlBody = /<body[^>]*>/i.test(html) ? html.replace(/(<body[^>]*>)/i, '$1' + banner) : banner + html;
+    try {
+      MailApp.sendEmail({
+        to:me,
+        subject:'[TEST] ' + email.subject,
+        body:'TEST ONLY — not sent to staff.\nReal recipient: ' + entry.wouldGoTo + '\nReal CC: ' + (entry.wouldCc || '—') + '\n\n' + email.body,
+        htmlBody:htmlBody,
+        name:'Classic Fireplace & BBQ Store'
+      });
+      entry.test = 'SENT_TO_TEST_RECIPIENT'; out.sent++;
+    } catch (err) {
+      entry.test = 'TEST_SEND_FAILED: ' + String(err && err.message || err).slice(0, 160); out.notSent++;
+    }
+    out.events.push(entry);
+  });
+  if (out.errors.length || out.notSent) out.status = 'TEST_COMPLETE_WITH_GAPS';
+  tmv3_audit_('Install', '', '', 'INSTALL_NOTICE_TEST', out.status,
+    JSON.stringify({testRecipient:me,checked:out.checked,needAttention:out.needAttention,sent:out.sent,notSent:out.notSent}));
+  Logger.log(JSON.stringify(out, null, 2));
+  return out;
+}
+
 // Original: 58_Operations; Function: tmv3_sendInstallMissingSoRemindersNow
 function tmv3_sendInstallMissingSoRemindersNow() {
   return tmv3_sendInstallMissingSoReminders_('MANUAL');
@@ -502,7 +597,7 @@ function tmv3_installStandardDailyTriggers() {
     triggers.filter(function(t){return t.handler==='tmv3_scheduledSheetRefresh';}).length!==3 ||
     triggers.some(function(t){return obsolete.indexOf(t.handler)>=0 && t.handler!=='tmv3_scheduledSheetRefresh';}))throw Error('STANDARD_SCHEDULE_READBACK_FAILED');
   const result={status:'STANDARD_DAILY_TRIGGERS_VERIFIED',schedule:schedule,triggers:triggers,businessTriggerCount:12,maintenanceTriggerCount:3};
-  tmv3_statusNotePut_('TMV3_STANDARD_SCHEDULE',JSON.stringify(result));
+  PropertiesService.getScriptProperties().setProperty('TMV3_STANDARD_SCHEDULE',JSON.stringify(result));
   return result;
 }
 
@@ -573,7 +668,7 @@ function tmv3_installRefreshView_(reason) {
   const count=tmv3_rows_(cfg.sheet).filter(function(r){return !!tmv3_clean_(r['Event ID']);}).length;
   if(count!==decisions.length)throw Error('INSTALL_VIEW_ROW_READBACK_FAILED');
   const result={status:'INSTALL_VIEW_REFRESHED',at:new Date().toISOString(),reason:reason,rows:count,strivenWrites:0,calendarWrites:0};
-  tmv3_statusNotePut_('TMV3_INSTALL_VIEW_LAST_SUCCESS',JSON.stringify(result));return result;
+  PropertiesService.getScriptProperties().setProperty('TMV3_INSTALL_VIEW_LAST_SUCCESS',JSON.stringify(result));return result;
 }
 
 // Original: 60_Automation; Function: tmv3_installSchedulePublication_

@@ -20,6 +20,7 @@
 //   piTest_WRITE_CreateSpecialInstallTasks()  one Installation Task per special-project event (preview unless write:true)
 //   piTest_AuditPreinspects120()      READ-ONLY: 120 days of CF Preinspects vs Striven (links, date/time, customer #, address)
 //   piTest_WRITE_FixAudit120()        fixes Task dates/times + plain-text Task links (preview unless write:true)
+//   piTest_WRITE_CreatePreInspectionTask()  one PI Task for one event the automation can't choose for (preview unless write:true)
 //   piTest_HeldRecords()              READ-ONLY: unfinished writes + duplicate-Task guards, checked in Striven
 //   piTest_WRITE_ClearResolvedHeld()  deletes held records that are past or proven resolved in Striven
 
@@ -887,7 +888,7 @@ function piTest_AuditPreinspects120() {
  *     canonical v1 schedule, so Striven's v2 AM/PM display bug is never "fixed").
  *  2) Plain-text "Task #NNNNN" made a clickable link, after checking in Striven that it is a
  *     Pre-Inspection Task for the customer # in the title. Written on the organizer copy. */
-function piTest_auditFixSettings_() { return {daysBack:120, daysAhead:30, write:true}; }
+function piTest_auditFixSettings_() { return {daysBack:120, daysAhead:30, write:false}; }
 
 function piTest_WRITE_FixAudit120() {
   const S = piTest_auditFixSettings_();
@@ -953,5 +954,201 @@ function piTest_WRITE_FixAudit120() {
     (r.kind === 'DATES' ? ' (' + r.taskStatus + ') ' + r.taskNow + ' → ' + r.eventIs : ' ' + (r.taskName || '')) + ' | ' + r.result); });
   Logger.log('PI_AUDIT_FIX_SUMMARY=' + JSON.stringify({write:S.write === true, dates:out.filter(function(r) { return r.kind === 'DATES'; }).length,
     links:out.filter(function(r) { return r.kind === 'LINK'; }).length}));
+  return out;
+}
+
+/** One Pre-Inspection Task for one CF Preinspects event when the automation cannot choose
+ * (the customer has other, unrelated open Tasks). Same rules as the automation's create:
+ * type 105, blank description, no SO/custom fields, Requested By = event creator employee,
+ * assignments by the automation's own reconciler. Preview unless write:true. */
+function piTest_piCreateSettings_() {
+  return {
+    eventId: '2h29h41f4gb4c5fm1gpin724v2@google.com',  // Andi Wheelband, Nov 20 (her own home)
+    customerId: 49965,                                  // Two Birds - Andi
+    customerName: 'Andi Wheelband',
+    phone: '(647) 202-8414',
+    locationMatch: '35 Mill',                           // 35 Mill St E (customer has 11 locations)
+    locationId: 0,                                      // set to force one Location ID
+    templateTaskId: 19885,                              // an existing Pre-Inspection Task (type only)
+    write: true
+  };
+}
+
+function piTest_WRITE_CreatePreInspectionTask() {
+  const S = piTest_piCreateSettings_();
+  const cfg = TMV3.VERTICALS.PreInspection;
+  const ev = CalendarApp.getCalendarById(cfg.primaryCalendarId).getEventById(S.eventId);
+  if (!ev) throw new Error('EVENT_NOT_ON_CF_PREINSPECTS: ' + S.eventId);
+  if (/TaskID=\d+/.test(String(ev.getDescription() || ''))) { Logger.log('PI_CREATE=ALREADY_LINKED'); return {status:'ALREADY_LINKED'}; }
+  const tpl = tmv3_getTaskById_(S.templateTaskId);
+  if (Number(tpl['Task Type ID']) !== 105) throw new Error('TEMPLATE_NOT_PREINSPECTION');
+  const locs = tmv3_rows_(TMV3.SHEETS.LOCATIONS).filter(function(r) { return String(r['Customer ID']) === String(S.customerId); });
+  const text = function(r) { return Object.keys(r).map(function(k) { return String(r[k] || ''); }).join(' '); };
+  const matched = locs.filter(function(r) { return text(r).toLowerCase().indexOf(S.locationMatch.toLowerCase()) >= 0; });
+  const forced = S.locationId ? locs.filter(function(r) { return Number(r['Location ID']) === Number(S.locationId); }) : [];
+  const pick = S.locationId ? forced : matched;
+  if (pick.length !== 1) throw new Error('LOCATION_NOT_UNIQUE: ' + pick.length + ' of ' + locs.length + ' match. Set locationId to one of: ' +
+    (matched.length ? matched : locs).map(function(r) { return r['Location ID'] + ' = ' + text(r).replace(/\s+/g, ' ').slice(0, 80); }).join(' || '));
+  const loc = pick[0];
+  // Street number followed by a street name (skips the Location / Customer IDs before it), then the city.
+  const addr = (text(loc).match(/\b\d+[A-Za-z]?\s+[A-Za-z][^,]*,\s*[^,]+/) || [''])[0].replace(/\s+/g, ' ').trim();   // "35 Mill St E, City"
+  const creator = String((ev.getCreators() || [])[0] || '').toLowerCase();
+  const emp = tmv3_resolveOrganizerEmployee_({organizer:creator});
+  if (!emp || emp.status !== 'MATCHED') throw new Error('REQUESTED_BY_NOT_AN_EMPLOYEE: ' + creator);
+  const title = S.customerName + ' - ' + addr + ' - ' + S.phone;
+  const payload = {Title:title, Type:{Id:105, Name:tpl['Task Type']}, Description:'', Budget:0,
+    StartDateTime:tmv3_strivenTaskDateTime_(ev.getStartTime()), DueDateTime:tmv3_strivenTaskDateTime_(ev.getEndTime()),
+    UseSubContractor:false, Customer:{Id:S.customerId}, Location:{Id:Number(loc['Location ID'])},
+    RequestedBy:{Id:Number(emp.employee.id), Name:String(emp.employee.name || ''), Type:'employee'}};
+  tmv3_piAssertTaskTitle_(title);
+  tmv3_enforcePreInspectionCreatePayloadHardRules_(payload);
+  tmv3_assertPreInspectionCreatePayloadHardRules_(payload);
+  const out = {title:title, location:loc['Location ID'] + ' ' + addr, requestedBy:emp.employee.name, when:ev.getStartTime(), write:S.write === true};
+  if (S.write !== true) { out.status = 'PREVIEW'; Logger.log('PI_CREATE=' + JSON.stringify(out)); return out; }
+  const json = tmv3_fetchJson_(TMV3.API_BASE + '/v2/tasks', {method:'post', contentType:'application/json', payload:JSON.stringify(payload)});
+  const taskId = Number(tmv3_extractCreatedTaskId_(json) || 0);
+  if (!taskId) throw new Error('CREATE_NO_ID_CHECK_STRIVEN');
+  out.taskId = taskId;
+  tmv3_audit_('PreInspection', S.eventId, String(taskId), 'OPERATOR_CREATE_TASK', 'PASS', JSON.stringify(out));
+  try { const rec = tmv3_findFreshEventRecord_('PreInspection', S.eventId);
+    out.assignment = (tmv3_reconcileTaskAssignments_(rec, taskId, 'PREINSPECTIONAUTO') || {}).status; } catch (e) { out.assignment = 'ERROR: ' + String(e.message || e).slice(0, 100); }
+  // Link on the organizer copy.
+  const stephen = CalendarApp.getCalendarById((cfg.secondaryCalendarIds || [])[0]);
+  const organizer = (stephen && stephen.getEventById(S.eventId)) || ev;
+  const plan = {links:[
+    {key:'ORDER', url:'https://classicfireplace.striven.com/next/crm#/sales-orders?accountId=' + S.customerId, label:'View Sales Orders – ' + S.customerName + ' (#' + S.customerId + ')'},
+    {key:'TASK', url:'https://classicfireplace.striven.com/Tasks/TaskInfo.aspx?TaskID=' + taskId, label:'Task #' + taskId + ' – ' + title}]};
+  organizer.setDescription(tmv3_preInspectionClickableManagedDescription_(String(organizer.getDescription() || ''), plan).description);
+  out.status = 'CREATED_AND_LINKED';
+  Logger.log('PI_CREATE=' + JSON.stringify(out));
+  return out;
+}
+
+
+// REPLACES the piTest_installCheckSettings_ / piTest_CheckInstallEvents block added earlier
+// at the end of 95_PI_Operator_Tests.gs (delete the old block, paste this one).
+// List line for the top of the file:
+//   piTest_CheckInstallEvents()       READ-ONLY: why each Install event (installCheck.eventIds) has or lacks a Task link
+
+/** Install events to check with piTest_CheckInstallEvents (Calendar event IDs, with or without @google.com). */
+function piTest_installCheckSettings_() {
+  return {
+    eventIds: [
+      '29s0pt198tuep2ek8ou3u5v66g@google.com',   // Barry Corbin SO585729, Nov 18 (Delivery Approved SO)
+      '7pc5vt44vn7k9qk1aup13ogc93@google.com',   // Goldcon cusr#57861 SO586602, Nov 18
+      '037i8ubqiltqjqve96gos0vobf@google.com',   // Sweat & Tonic SO600515, Nov 19
+      '6qev26iqdmq8krskld25q7kddd@google.com',   // Kerry Warren SO580795, Nov 23 (RECREATE_TASK not written)
+      '124m2fobs8vh8sfrlhp8pq6f8a@google.com'    // John Gates SO585506, Nov 27
+    ],
+    auditRowsToScan: 3000                       // newest TM Audit rows searched for each event's history
+  };
+}
+
+/** READ-ONLY: for each Install event, what the automation reads from it, the decision at every step
+ * (Step 3 Sales Order, Step 4 identity, Step 6 Task decision, Step 7 plan), which live-slot gate it
+ * would stop at, and its recent TM Audit history (including what the Install slots recorded for it).
+ * Uses the same cached sources as the 08:00/13:00/17:00 slots. Writes nothing anywhere.
+ * Note: the live slot first refreshes the SO and Requested By contact from Striven
+ * (tmv3_verticalEnrichEvidence_, which writes the Orders cache), so this check does NOT run that step. */
+function piTest_CheckInstallEvents() {
+  const S = piTest_installCheckSettings_();
+  const ids = (S.eventIds || []).map(function(id) {
+    id = String(id || '').trim();
+    if (!/^[a-z0-9_]+(@google\.com)?$/i.test(id)) throw new Error('PI_TEST_EVENT_ID_INVALID: ' + id);
+    return /@google\.com$/i.test(id) ? id : id + '@google.com';
+  });
+  const pick = function(d) {
+    return d ? {disposition:d.disposition || d.status || '', code:d.code || '', reason:String(d.reason || d.message || '').slice(0, 220)} : null;
+  };
+  const props = PropertiesService.getScriptProperties();
+
+  // TM Audit history, read once: rows for each event, plus each event's line inside Install slot results.
+  const history = {};
+  ids.forEach(function(id) { history[id] = []; });
+  try {
+    const sh = tmv3_sheet_(TMV3.SHEETS.AUDIT);
+    const last = sh.getLastRow(), from = Math.max(2, last - Number(S.auditRowsToScan || 3000) + 1);
+    if (last >= 2) sh.getRange(from, 1, last - from + 1, 7).getValues().forEach(function(r) {
+      const at = r[0] instanceof Date ? Utilities.formatDate(r[0], TMV3_TIMEZONE, 'MMM d HH:mm') : String(r[0]);
+      const eventId = String(r[2] || ''), action = String(r[4] || ''), detail = String(r[6] || '');
+      if (history[eventId]) {
+        history[eventId].push(at + ' ' + action + ' ' + String(r[5] || '') + (detail ? ' ' + detail.slice(0, 200) : ''));
+        return;
+      }
+      if (String(r[1]) !== 'Install' || action !== 'STANDARD_DAILY_SLOT' || detail.indexOf('@google.com') < 0) return;
+      ids.forEach(function(id) {
+        const at2 = detail.indexOf(id);
+        if (at2 < 0) return;
+        // The slot result is {..., results:[{eventId, status, error, plans...}]}: keep this event's entry.
+        let entry = '';
+        try {
+          const json = JSON.parse(detail);
+          const all = (json.result && json.result.results) || json.results || [];
+          const one = all.filter(function(x) { return x && x.eventId === id; })[0];
+          entry = one ? JSON.stringify(one).slice(0, 300) : '';
+        } catch (e) {}
+        if (!entry) entry = detail.slice(Math.max(0, at2 - 20), at2 + 260);
+        history[id].push(at + ' SLOT ' + String(r[5] || '') + ' ' + entry);
+      });
+    });
+  } catch (e) {
+    ids.forEach(function(id) { history[id].push('TM Audit unreadable: ' + String(e && e.message || e).slice(0, 120)); });
+  }
+
+  // Indexes are built once and shared by every event.
+  const anchorRefs = tmv3_step3AnchorIndex_();
+  const identityRefs = tmv3_step4IdentityIndex_();
+  const taskRefs = tmv3_step5TaskIndex_();
+  const out = ids.map(function(id) {
+    const row = {eventId:id};
+    try {
+      const rec = tmv3_findFreshEventRecord_('Install', id);
+      row.title = rec.title;
+      row.start = rec.start;
+      row.creator = rec.creator;
+      row.read = {so:rec.orderNumber || '', customerNo:rec.customerNumber || '', phone:rec.phone || '', location:rec.location || ''};
+      row.hasTaskLink = !!rec.existingTaskId;
+      row.creatorAllowed = tmv3_installCreatorAllowed_(rec);
+      const s2 = tmv3_step2CalendarRecords_([rec]);
+      const s3 = tmv3_step3BusinessAnchorRecords_(s2, anchorRefs);
+      const s4 = tmv3_step4IdentityRecords_(s3, identityRefs);
+      const s5 = tmv3_step5TaskRecords_(s4, taskRefs);
+      const s6 = tmv3_step6DecisionRecords_(s5);
+      row.step2 = pick(s2[0] && s2[0].step2);
+      row.step3 = pick(s3[0] && s3[0].step3);
+      if (s3[0] && s3[0].step3 && s3[0].step3.anchor) {
+        const a = s3[0].step3.anchor;
+        row.step3.anchor = {orderId:a.orderId || '', orderNumber:a.orderNumber || '', orderType:a.orderType || '',
+          customerId:a.customerId || '', locationId:a.orderLocationIdEvidence || '', contactId:a.orderContactIdEvidence || ''};
+      }
+      row.step4 = pick(s4[0] && s4[0].step4);
+      row.step6 = pick(s6[0] && s6[0].step6);
+      const plans = tmv3_step7FreshPlansForEvent_('Install', id);
+      row.plans = plans.map(function(p) {
+        return {taskId:p.taskId || '', plan:p.plan || '', actions:p.actions || [], blocker:p.blocker || '',
+          customer:p.expectedCustomerId || '', order:p.expectedOrderId || '', location:p.expectedLocationId || '',
+          requestedBy:(p.expectedRequestedByType || '') + ' ' + (p.expectedRequestedById || '')};
+      });
+      // The live slot's gates, in order (before its Striven refresh of the SO and contact).
+      const held = piTest_json_(props.getProperty('TMV3_VERTICAL_EVENT_' + tmv3_hash_('Install|' + id)));
+      if (held) row.heldWrite = held;
+      row.slotGate =
+        !row.creatorAllowed ? 'SKIPPED_CREATOR_UNVERIFIED' :
+        !plans.length || plans.some(function(p) { return !!p.blocker; }) ? 'REVIEW (plan blocked)' :
+        plans.some(function(p) { return !p.expectedRequestedById || p.expectedRequestedByType !== 'contact'; }) ?
+          'REVIEW INSTALL_REQUESTED_BY_UNRESOLVED unless the slot\'s Striven refresh finds the contact' :
+        held && ['INTENT','UNCERTAIN'].indexOf(held.state) >= 0 ? 'UNCERTAIN_RECONCILIATION_REQUIRED (earlier write unfinished)' :
+        'WOULD_WRITE';
+    } catch (e) {
+      row.error = String(e && e.message || e).slice(0, 300);
+    }
+    row.audit = history[id].slice(-12);
+    return row;
+  });
+  out.forEach(function(r) { Logger.log('PI_INSTALL_CHECK=' + JSON.stringify(r)); });
+  Logger.log('PI_INSTALL_CHECK_SUMMARY=' + JSON.stringify(out.map(function(r) {
+    return {title:r.title || r.eventId, so:r.read && r.read.so, step3:r.step3 && r.step3.code, step6:r.step6 && r.step6.disposition,
+      slotGate:r.slotGate || '', lastAudit:r.audit.length ? r.audit[r.audit.length - 1].slice(0, 220) : 'none in scanned rows', error:r.error || ''};
+  })));
   return out;
 }
