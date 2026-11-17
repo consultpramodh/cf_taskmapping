@@ -3456,7 +3456,7 @@ function tmv3_extractCustomerNumberForVertical_(vertical, text) {
   const s = tmv3_clean_(text);
 
   const labelled = s.match(
-    /(?:Customer|Cust(?:omer)?\s*#?|\bCus[rt]?\s*#|\bCst\s*#|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
+    /(?:Customer|Cust(?:omer)?\s*#?|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
   );
 
   if (labelled) return labelled[1];
@@ -3570,7 +3570,7 @@ function tmv3_extractOrderNumber_(text) {
 function tmv3_extractCustomerNumber_(text) {
   const s = tmv3_clean_(text);
   const m = s.match(
-    /(?:Customer|Cust(?:omer)?\s*#?|\bCus[rt]?\s*#|\bCst\s*#|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
+    /(?:Customer|Cust(?:omer)?\s*#?|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
   );
 
   if (m) return m[1];
@@ -5151,9 +5151,7 @@ function tmv3_step3AnchorIndex_() {
 function tmv3_step3AllowedOrderTypes_(vertical) {
   const v = tmv3_clean_(vertical);
 
-  // Delivery Approved is a later stage of an Approved Sales Order, so it is still a valid
-  // Install anchor (operator 2026-11-17, e.g. SO585729 was blocked as DELIVERY_APPROVED only).
-  if (v === 'Install') return ['SALES_ORDER', 'DELIVERY_APPROVED'];
+  if (v === 'Install') return ['SALES_ORDER'];
   if (v === 'Delivery') return ['SALES_ORDER', 'DELIVERY_APPROVED'];
   if (v === 'Service') return ['WORK_ORDER'];
   if (v === 'PreInspection') {
