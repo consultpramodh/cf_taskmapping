@@ -20545,8 +20545,10 @@ function tmv3_runFullVerticalSweep_(vertical, options) {
   const began=Date.now();const deadline=began+TMV3_VERTICAL_SWEEP_RUN_MS;
   let result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
   // Another workflow holds the script lock: keep asking for up to 2 minutes instead of giving up.
+  // Every workflow waits (operator 2026-11-18: one run per slot, so a LOCK_BUSY slot would do nothing).
+  // The wait comes out of the same run deadline, so the slot still ends inside 6 minutes.
   const lockRetries=[];
-  while (followOn && result.status==='LOCK_BUSY' && Date.now()-began<120000) {
+  while (result.status==='LOCK_BUSY' && Date.now()-began<120000) {
     Utilities.sleep(15000); lockRetries.push(new Date().toISOString());
     result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
   }
