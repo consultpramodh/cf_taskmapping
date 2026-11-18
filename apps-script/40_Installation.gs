@@ -237,7 +237,7 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
 // Incomplete), Sales Order not found in Striven, or job-site address missing. First email and
 // follow-ups use the same timing rules as PreInspection (tmv3_preInspectionNotificationDecision_).
 // While ON, it replaces the older plain "Sales Order # missing" reminder.
-var TMV3_INSTALL_NOTICE_ENABLED = false;   // ON after the TEST email is approved
+var TMV3_INSTALL_NOTICE_ENABLED = true;    // ON since 2026-11-18 (TEST email approved)
 const TMV3_INSTALL_SO_NOT_APPROVED = Object.freeze({'18':'incomplete','19':'quoted','20':'pending approval'});
 // Install notices only for events from today through the next 14 days (operator 2026-11-18).
 const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 14;
