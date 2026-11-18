@@ -321,8 +321,6 @@ function tmv3_installNoticeEmail_(record, assessment, followupNumber) {
       return '<div style="display:inline-block;background:#b42318;color:#ffffff;font-size:11px;font-weight:700;' +
         'letter-spacing:1px;padding:3px 8px;border-radius:3px;margin:0 6px 8px 0;">' + esc(label) + '</div>';
     }).join('');
-  const items = assessment.missing.map(function(m) {
-    return '<div style="color:#B42318;font-weight:700;">❌ ' + esc(m.message) + '</div>'; }).join('');
   const rows = assessment.missing.map(function(m) {
     return '<tr><td valign="top" style="padding:12px;border:1px solid #dddddd;font-weight:700;">' + esc(m.field) +
       '</td><td valign="top" style="padding:12px;border:1px solid #dddddd;"><strong style="color:#B42318;">' + esc(m.now) +
@@ -343,15 +341,13 @@ function tmv3_installNoticeEmail_(record, assessment, followupNumber) {
     '<tr><td style="padding:20px 24px 12px;">' +
       '<div style="font-size:12px;color:#666;font-style:italic;margin-bottom:16px;">This is an automated email notification from Classic Fireplace &amp; BBQ Store.</div>' +
       '<div style="font-size:14px;line-height:21px;">Hi <strong>' + esc(firstName) + '</strong>,</div>' +
-      '<div style="margin-top:12px;padding:12px;background:#f6f5f3;border:1px solid #e2e0dc;"><strong>Install requiring attention</strong><br>' +
-        esc(record.title || '(Untitled event)') + '<br><strong>' + esc(when) + '</strong><br>' + esc(record.location || 'Location missing') + '</div>' +
-      '<div style="font-size:14px;line-height:21px;margin-top:8px;">This install needs the following before it can go ahead. Please update the items highlighted below.</div>' +
-      '<div style="margin-top:12px;background:#fff5f5;border-left:4px solid #b42b2f;padding:11px 13px;font-size:13px;line-height:22px;color:#8f2024;">' + items + '</div>' +
+      '<div style="font-size:14px;line-height:21px;margin-top:8px;">Please fix the item' + (assessment.missing.length > 1 ? 's' : '') + ' below before this install goes ahead.</div>' +
     '</td></tr>' +
+    // The event is shown once (operator 2026-11-18: no repeated details).
     '<tr><td style="padding:0 24px 14px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f6f5f3;border:1px solid #e2e0dc;"><tr><td style="padding:12px 14px;">' +
       '<div style="font-size:15px;font-weight:700;">' + esc(record.title || '(Untitled event)') + '</div>' +
-      '<div style="font-size:12px;color:#666;margin-top:4px;">' + esc(when) + '</div>' +
-      (record.location ? '<div style="font-size:12px;color:#666;margin-top:4px;">' + esc(record.location) + '</div>' : '') +
+      '<div style="font-size:13px;color:#444;margin-top:4px;">' + esc(when) + '</div>' +
+      (record.location ? '<div style="font-size:13px;color:#444;margin-top:4px;">' + esc(record.location) + '</div>' : '') +
     '</td></tr></table></td></tr>' +
     '<tr><td style="padding:0 24px 20px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #dddddd;font-size:13px;">' +
       '<tr><td width="18%" style="background:#f3f3f3;padding:10px 12px;border-right:1px solid #dddddd;border-bottom:1px solid #dddddd;"></td>' +
@@ -362,7 +358,6 @@ function tmv3_installNoticeEmail_(record, assessment, followupNumber) {
     '<tr><td style="padding:0 24px 22px;">' + soLink +
       '<div style="font-size:14px;margin-bottom:14px;"><a href="' +
       esc(tmv3_calendarEventUrl_(record.eventId, record.calendarId || TMV3.VERTICALS.Install.calendarIds[0])) + '">Open calendar appointment</a></div>' +
-      '<div style="font-size:14px;margin-bottom:14px;">Please get the Sales Order approved in Striven (or update the calendar event) before the install.</div>' +
       '<div style="font-size:14px;">Thank you.</div></td></tr>' +
     '<tr><td style="background:#202020;padding:12px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
     '</table></td></tr></table></body></html>';
