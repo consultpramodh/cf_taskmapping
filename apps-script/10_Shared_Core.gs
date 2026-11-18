@@ -14068,8 +14068,10 @@ function tmv3_step7FreshOrderOwnership_(contract, eventRecord) {
   if (contract.vertical === 'PreInspection') return {status:'N/A'};
   const number=tmv3_clean_(eventRecord && eventRecord.orderNumber);
   if (!/^\d+$/.test(number)) throw new Error('FRESH_CALENDAR_ORDER_NUMBER_REQUIRED');
+  const installRecreate=contract.vertical==='Install' &&
+    (contract.actions||[]).indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)!==-1;
   const proof=tmv3_taskFirstFreshOrderOwnershipById_(contract.expectedOrderId,
-    contract.expectedCustomerId,'SO#'+number,contract.vertical);
+    contract.expectedCustomerId,'SO#'+number,contract.vertical,{installRecreate:installRecreate});
   return {status:'VERIFIED',orderId:proof.orderId,customerId:proof.customerId,orderStatus:proof.status};
 }
 
@@ -18959,9 +18961,14 @@ function tmv3_repairExistingTaskRelationships(taskId, vertical, expected, permis
 /** One authoritative GET instead of downloading the entire Work Order report.
  * The order ID, customer ownership and SO number must all agree.
  */
-function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, vertical) {
+function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, vertical, options) {
   if (['Install','Delivery','Service'].indexOf(vertical)<0) throw new Error('ORDER_NOT_VERIFIED_ACTIVE: vertical status policy required.');
   const requiredStatus=vertical==='Service'?'in progress':'approved';
+  // Install RECREATE_TASK (operator 2026-11-18): the SO already has completed Install Tasks and a new
+  // event is booked (go-back / warranty / return visit). The SO is usually Completed or In Progress by
+  // then, so those are accepted for this case only. Quoted, declined, canceled and lost never are.
+  const acceptedStatuses=[requiredStatus].concat(
+    vertical==='Install' && options && options.installRecreate===true ? ['in progress','completed'] : []);
   const id = Number(orderId);
   const cid = tmv3_clean_(customerId);
   if (!Number.isSafeInteger(id) || id <= 0 || !/^[1-9]\d*$/.test(cid)) {
@@ -18992,7 +18999,7 @@ function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, v
   const statusFromId = known[statusId] || '';
   if ((statusId && !statusFromId) ||
       (statusFromId && normalizedName && statusFromId !== normalizedName) ||
-      (statusFromId || normalizedName) !== requiredStatus) {
+      acceptedStatuses.indexOf(statusFromId || normalizedName) < 0) {
     throw new Error('ORDER_NOT_VERIFIED_ACTIVE: canceled, closed, unapproved, unknown or conflicting Order status.');
   }
   const titleOrder = tmv3_taskFirstTitleOrderNumber_(taskName);
@@ -19093,7 +19100,6 @@ function onOpen() {
         .addItem('Clear Selected Acknowledgement', 'tmv3_clearAcknowledgementSelectedMorningOps')
     )
     .addToUi();
-    cwcAddContractorMenu_();
 }
 
 function tmv3_managedTriggerHandlers_() {
@@ -20240,7 +20246,9 @@ function tmv3_verticalEnrichEvidence_(vertical, record, plans) {
   if (!/^[1-9]\d*$/.test(customerId) || !/^\d+$/.test(number)) return {status:'IDENTITY_OR_ORDER_REVIEW'};
   let id=tmv3_clean_(one.expectedOrderId);
   if (!id) id=tmv3_taskFirstFindOrderByTitle_(number,customerId);
-  const proof=tmv3_taskFirstFreshOrderOwnershipById_(id,customerId,'SO#'+number,vertical);
+  const installRecreate=vertical==='Install' && (plans||[]).length>0 && (plans||[]).every(function(p){
+    return p.disposition==='RECREATE_TASK' || (p.actions||[]).indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)!==-1;});
+  const proof=tmv3_taskFirstFreshOrderOwnershipById_(id,customerId,'SO#'+number,vertical,{installRecreate:installRecreate});
   const sheet=tmv3_sheet_(TMV3.SHEETS.ORDERS),values=sheet.getDataRange().getValues();
   const headers=['Order ID','Order Number','Customer ID','Location ID','Contact ID','Status','Name','Order Type','URL','Fingerprint'];
   if (!values.length || JSON.stringify(values[0].slice(0,10))!==JSON.stringify(headers)) throw new Error('ORDER_CACHE_SCHEMA_DRIFT');
@@ -20291,7 +20299,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
       if(vertical==='Install') {
         const budget=tmv3_strivenApiBudgetStatus_();
         if(budget.exhausted || budget.remaining<Number(policy.verticalProductionMinApiRemaining||60))return Object.assign(result,{status:'API_BUDGET_WAIT'});
-        result.sources=tmv3_refreshOperationalSourcesIfNeeded_(120,false);
+        result.sources=tmv3_slotSourceRefresh_();
         result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
       }
       // Consume the existing intake queue; each event is freshly verified below.
@@ -20312,7 +20320,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     if(events.length!==state.total)throw Error('SWEEP_SNAPSHOT_INCOMPLETE_NO_WRITE');
     for(let i=state.cursor;i<events.length;i++) {
       const budget=tmv3_strivenApiBudgetStatus_();
-      if(Date.now()-now>120000){result.status='RUNTIME_CONTINUATION_REQUIRED';break;}
+      if(Date.now()-now>120000 && !(options.deadline && Date.now()<options.deadline) || options.deadline && Date.now()>=options.deadline){result.status='RUNTIME_CONTINUATION_REQUIRED';break;}
       if(budget.exhausted||budget.remaining<Number(policy.verticalProductionMinApiRemaining||60)){result.status='API_BUDGET_WAIT';break;}
       const id=events[i];result.scanned++;
       const key='TMV3_VERTICAL_EVENT_'+tmv3_hash_(vertical+'|'+id);
@@ -20382,7 +20390,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         const message=String(err && err.message || err);
         if(writeStarted)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500)}));
         result.results.push({eventId:id,status:writeStarted?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
-        tmv3_audit_(vertical,id,'','VERTICAL_AUTO',writeStarted?'ATTENTION':'REVIEW',message);
+        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',message);
         if(writeStarted)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
       } finally {
         const outcome=result.results[result.results.length-1]||{status:'UNKNOWN'};
@@ -20391,7 +20399,6 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         else if(outcome.status==='UNCERTAIN_RECONCILIATION_REQUIRED')state.uncertain++;
         else state.review++;
         props.setProperty(stateKey,JSON.stringify(state));
-        tmv3_audit_(vertical,id,'','VERTICAL_SWEEP_EVENT',outcome.status,JSON.stringify(outcome));
       }
     }
     state.complete=state.cursor>=state.total;props.setProperty(stateKey,JSON.stringify(state));
@@ -20527,25 +20534,31 @@ function tmv3_automationSheetRefreshStatus() {
 
 // Workflows whose sweep finishes in follow-on runs instead of waiting for the next slot
 // (operator rule 2026-11-13; Install first). Handler = the one-off follow-on trigger function.
-var TMV3_VERTICAL_FOLLOW_ON = {Install:'tmv3_installSweepContinue'};
+// No follow-on runs: each standard slot is one run (operator 2026-11-18). Unfinished work carries to the next slot.
+var TMV3_VERTICAL_FOLLOW_ON = {};
+// One slot run may spend this long on the sweep, leaving time for Install notices inside the 6-minute limit.
+const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
 
 function tmv3_runFullVerticalSweep_(vertical, options) {
   options = options || {};
   const followOn = !!TMV3_VERTICAL_FOLLOW_ON[vertical];
-  const began=Date.now();let result=tmv3_verticalProductionCycle_(vertical);
+  const began=Date.now();const deadline=began+TMV3_VERTICAL_SWEEP_RUN_MS;
+  let result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
   // Another workflow holds the script lock: keep asking for up to 2 minutes instead of giving up.
+  // Every workflow waits (operator 2026-11-18: one run per slot, so a LOCK_BUSY slot would do nothing).
+  // The wait comes out of the same run deadline, so the slot still ends inside 6 minutes.
   const lockRetries=[];
-  while (followOn && result.status==='LOCK_BUSY' && Date.now()-began<120000) {
+  while (result.status==='LOCK_BUSY' && Date.now()-began<120000) {
     Utilities.sleep(15000); lockRetries.push(new Date().toISOString());
-    result=tmv3_verticalProductionCycle_(vertical);
+    result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
   }
   let totalWrites=Number(result.writes||0),totalScanned=Number(result.scanned||0),allResults=(result.results||[]).slice(),batchStatuses=[result.status];
   // A batch can take ~2 minutes, so with follow-ons a new one starts only in the first 2.5 minutes
   // (keeps the whole slot inside Apps Script's 6-minute limit; the rest continues a minute later).
-  const startBy = followOn ? 150000 : 240000;
+  const startBy = followOn ? 150000 : TMV3_VERTICAL_SWEEP_RUN_MS - 20000;
   while (result.pending>0 && result.status!=='API_BUDGET_WAIT' && result.status!=='LOCK_BUSY' &&
       result.scanned>0 && Date.now()-began<startBy) {
-    const before=result.pending,next=tmv3_verticalProductionCycle_(vertical);
+    const before=result.pending,next=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
     batchStatuses.push(next.status);
     totalWrites+=Number(next.writes||0);totalScanned+=Number(next.scanned||0);allResults.push.apply(allResults,next.results||[]);
     result=next;if(!next.scanned || next.pending>=before)break;
