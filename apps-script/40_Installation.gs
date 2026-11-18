@@ -241,6 +241,8 @@ var TMV3_INSTALL_NOTICE_ENABLED = true;    // ON since 2026-11-18 (TEST email ap
 const TMV3_INSTALL_SO_NOT_APPROVED = Object.freeze({'18':'incomplete','19':'quoted','20':'pending approval'});
 // Install notices only for events from today through the next 14 days (operator 2026-11-18).
 const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 14;
+// Install notices: CC Jay + Thang (tmv3_preInspectionNotificationCc_), BCC Pramodh (operator 2026-11-18).
+const TMV3_INSTALL_NOTICE_BCC = Object.freeze(['pramodh@classicfireplace.ca']);
 // One-off special projects: booked without a Sales Order on purpose (operator 2026-11-13).
 // Their Install notice never asks for an SO #.
 const TMV3_INSTALL_SPECIAL_PROJECTS = Object.freeze([/^\s*Times\s*-\s*Chatsworth\b/i]);
@@ -415,15 +417,17 @@ function tmv3_sendInstallNotices_(scope) {
     if (MailApp.getRemainingDailyQuota() < 3) { out.errors++; return; }
     const to = tmv3_piCreatorRecipients_(email.recipient);
     const cc = (email.cc || []).filter(function(c) { return to.indexOf(String(c).toLowerCase()) < 0; });
+    const bcc = TMV3_INSTALL_NOTICE_BCC.filter(function(b) {
+      b = String(b).toLowerCase(); return to.indexOf(b) < 0 && cc.map(function(c) { return String(c).toLowerCase(); }).indexOf(b) < 0; });
     const next = {status:'SENDING',sentCount:Number(state && state.sentCount || 0) + 1,lastSentAt:new Date().toISOString()};
     props.setProperty(key, JSON.stringify(next));
     try {
-      MailApp.sendEmail({to:to.join(','),cc:cc.join(','),subject:email.subject,body:email.body,htmlBody:email.htmlBody,name:'Classic Fireplace & BBQ Store'});
+      MailApp.sendEmail({to:to.join(','),cc:cc.join(','),bcc:bcc.join(','),subject:email.subject,body:email.body,htmlBody:email.htmlBody,name:'Classic Fireplace & BBQ Store'});
       next.status = 'SENT'; props.setProperty(key, JSON.stringify(next));
       out.sent++;
-      out.events.push({eventId:record.eventId,status:'SENT',to:to.join(','),followup:decision.followupNumber});
+      out.events.push({eventId:record.eventId,status:'SENT',to:to.join(','),cc:cc.join(','),bcc:bcc.join(','),followup:decision.followupNumber});
       tmv3_audit_('Install', record.eventId, '', 'INSTALL_NOTICE_EMAIL', 'SENT',
-        JSON.stringify({to:to,followupNumber:decision.followupNumber,missing:x.assessment.missing.map(function(m) { return m.code; })}));
+        JSON.stringify({to:to,cc:cc,bcc:bcc,followupNumber:decision.followupNumber,missing:x.assessment.missing.map(function(m) { return m.code; })}));
     } catch (err) {
       out.errors++;
       tmv3_audit_('Install', record.eventId, '', 'INSTALL_NOTICE_EMAIL', 'ATTENTION', String(err && err.message || err));

@@ -718,6 +718,7 @@ function piTest_PreviewInstallNotices() {
     const d = tmv3_preInspectionNotificationDecision_(r, state);
     row.status = d.send ? 'WOULD_SEND' : d.status; row.followup = d.followupNumber || 0;
     row.wouldGoTo = tmv3_piCreatorRecipients_(row.creator).join(',');
+    row.wouldCc = tmv3_preInspectionNotificationCc_().join(','); row.wouldBcc = TMV3_INSTALL_NOTICE_BCC.join(',');
     return row;
   });
   rows.filter(function(r) { return r.status !== 'OK_NOTHING_TO_SEND'; })
