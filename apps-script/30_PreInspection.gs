@@ -2301,7 +2301,7 @@ function tmv3_piCycleBody_(cycle) {
   // Cache-age gates and last-good policy; a refresh failure stops before creates or emails.
   // Follow-on runs never start the big Striven report refresh (it held the lock 30 min on
   // 2026-11-16 08:09 and timed out); they use the slot's cache, and every write still re-reads Striven.
-  if (options.skipSourceRefresh !== true) tmv3_refreshOperationalSourcesIfNeeded_(120, false);
+  if (options.skipSourceRefresh !== true) tmv3_slotSourceRefresh_(); // the big refresh runs on its own (20_Master_Triggers)
   cycle.pending = JSON.parse(props.getProperty('TMV3_PI_PENDING_EVENTS') || '[]');
   if (!scopeEventId) tmv3_piRecoverPendingEvents_(cycle, records);
 

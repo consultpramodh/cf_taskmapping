@@ -504,8 +504,12 @@ function tmv3_installStandardDailyTriggers() {
   const removable=before.filter(function(t){return obsolete.indexOf(t.getHandlerFunction())>=0;});
   const retained=before.filter(function(t){return removable.indexOf(t)<0;});
   const missing=handlers.filter(function(spec){return !retained.some(function(t){return t.getHandlerFunction()===spec.handler;});});
-  if(retained.length+missing.length+3>20)throw Error('STANDARD_SCHEDULE_CAPACITY_NO_CHANGE');
+  const refreshHours=TMV3_SOURCE_REFRESH_HOURS;
+  const retainedRefresh=retained.filter(function(t){return t.getHandlerFunction()==='tmv3_sourceRefreshSlot';});
+  if(retained.length-retainedRefresh.length+missing.length+3+refreshHours.length>20)throw Error('STANDARD_SCHEDULE_CAPACITY_NO_CHANGE');
   removable.forEach(function(t){ScriptApp.deleteTrigger(t);});
+  retainedRefresh.forEach(function(t){ScriptApp.deleteTrigger(t);});
+  refreshHours.forEach(function(hour){ScriptApp.newTrigger('tmv3_sourceRefreshSlot').timeBased().atHour(hour).nearMinute(0).everyDays(1).inTimezone(schedule.timezone).create();});
   missing.forEach(function(spec){
     ScriptApp.newTrigger(spec.handler).timeBased().atHour(spec.hour).nearMinute(0).everyDays(1).inTimezone(schedule.timezone).create();
   });
@@ -514,8 +518,9 @@ function tmv3_installStandardDailyTriggers() {
   const expected=handlers.map(function(x){return x.handler;});
   if(expected.some(function(h){return triggers.filter(function(t){return t.handler===h;}).length!==1;}) ||
     triggers.filter(function(t){return t.handler==='tmv3_scheduledSheetRefresh';}).length!==3 ||
+    triggers.filter(function(t){return t.handler==='tmv3_sourceRefreshSlot';}).length!==refreshHours.length ||
     triggers.some(function(t){return obsolete.indexOf(t.handler)>=0 && t.handler!=='tmv3_scheduledSheetRefresh';}))throw Error('STANDARD_SCHEDULE_READBACK_FAILED');
-  const result={status:'STANDARD_DAILY_TRIGGERS_VERIFIED',schedule:schedule,triggers:triggers,businessTriggerCount:12,maintenanceTriggerCount:3};
+  const result={status:'STANDARD_DAILY_TRIGGERS_VERIFIED',schedule:schedule,triggers:triggers,businessTriggerCount:12,maintenanceTriggerCount:3+refreshHours.length,sourceRefreshHours:refreshHours};
   tmv3_statusNotePut_('TMV3_STANDARD_SCHEDULE',JSON.stringify(result));
   return result;
 }

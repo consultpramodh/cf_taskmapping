@@ -97,3 +97,40 @@ function tmv3_verticalRunSummary_(slot,result) {
   while(text.length>45000 && out.items.length){out.items.length=Math.floor(out.items.length/2);out.itemsTruncated=true;text=JSON.stringify(out);}
   return text.length>49000?text.slice(0,49000):text;
 }
+// The big Striven report refresh (Customers, Locations, Orders, Tasks...) runs on its own, before each
+// slot window, so no business slot holds the script lock while it runs. Operator 2026-11-18: the Install
+// 08:00 slot timed out at 30 minutes on 2026-11-16 and 2026-11-18 inside this refresh.
+const TMV3_SOURCE_REFRESH_HOURS = Object.freeze([5, 11, 15]);
+// A slot leaves the refresh to the dedicated run when that run started within this window.
+const TMV3_SOURCE_REFRESH_SLOT_WINDOW_MS = 5 * 3600000;
+
+/** Trigger handler: refresh the Striven source caches (5:00, 11:00, 15:00 Toronto). One audit row. */
+function tmv3_sourceRefreshSlot() {
+  const started = Date.now(), props = PropertiesService.getScriptProperties();
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(120000)) {
+    tmv3_audit_('SYSTEM','','','SOURCE_REFRESH','LOCK_BUSY','');
+    return {status:'LOCK_BUSY'};
+  }
+  let result;
+  try {
+    // Recorded before the refresh, so a timed-out refresh still keeps the slots from retrying it inline.
+    props.setProperty('TMV3_SOURCE_REFRESH_SLOT_ATTEMPT_AT', String(started));
+    const r = tmv3_refreshOperationalSourcesIfNeeded_(120, false);
+    result = {status:r.status,master:!!(r.master && r.master.refreshed),transactions:!!(r.transactions && r.transactions.refreshed)};
+  } catch (err) {
+    result = {status:'ATTENTION',error:String(err && err.message || err).slice(0, 300)};
+  } finally { lock.releaseLock(); }
+  result.seconds = Math.round((Date.now() - started) / 1000);
+  tmv3_audit_('SYSTEM','','','SOURCE_REFRESH',result.status,JSON.stringify(result));
+  return result;
+}
+
+/** Used by the business slots instead of refreshing inline. Falls back to the inline refresh only when
+ * the dedicated run has not started in the last 5 hours (e.g. its triggers are not installed). */
+function tmv3_slotSourceRefresh_() {
+  const at = Number(PropertiesService.getScriptProperties().getProperty('TMV3_SOURCE_REFRESH_SLOT_ATTEMPT_AT') || 0);
+  if (at && Date.now() - at < TMV3_SOURCE_REFRESH_SLOT_WINDOW_MS)
+    return {status:'LEFT_TO_SOURCE_REFRESH_RUN',lastRunStarted:new Date(at).toISOString()};
+  return tmv3_refreshOperationalSourcesIfNeeded_(120, false);
+}

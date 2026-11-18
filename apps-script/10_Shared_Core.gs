@@ -20299,7 +20299,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
       if(vertical==='Install') {
         const budget=tmv3_strivenApiBudgetStatus_();
         if(budget.exhausted || budget.remaining<Number(policy.verticalProductionMinApiRemaining||60))return Object.assign(result,{status:'API_BUDGET_WAIT'});
-        result.sources=tmv3_refreshOperationalSourcesIfNeeded_(120,false);
+        result.sources=tmv3_slotSourceRefresh_();
         result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
       }
       // Consume the existing intake queue; each event is freshly verified below.

@@ -490,9 +490,9 @@ function piTest_EndToEndCheck() {
     const have = {};
     ScriptApp.getProjectTriggers().forEach(function(t) { const h = t.getHandlerFunction(); have[h] = (have[h] || 0) + 1; });
     const missing = expected.filter(function(h) { return !have[h]; });
-    const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh'; });
+    const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh' && h !== 'tmv3_sourceRefreshSlot'; });
     // A pending one-off follow-on run (unfinished sweep) is expected, not extra.
-    const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh' &&
+    const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh' && h !== 'tmv3_sourceRefreshSlot' &&
       !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) &&
       !(h === 'tmv3_installSweepContinue' && have[h] === 1 && typeof TMV3_VERTICAL_FOLLOW_ON !== 'undefined' && TMV3_VERTICAL_FOLLOW_ON.Install); });
     const pi = ['tmv3_preInspectionCheck0800', 'tmv3_preInspectionCheck1300', 'tmv3_preInspectionCheck1700'].filter(function(h) { return !have[h]; });
@@ -653,6 +653,7 @@ function piTest_TriggerAudit() {
     const n = installed[h].length;
     let kind = 'EXTRA', status = 'WARN';
     if (h === 'tmv3_scheduledSheetRefresh') { kind = 'SHEET REFRESH 8/13/17'; status = n === 3 ? 'PASS' : 'WARN'; }
+    else if (h === 'tmv3_sourceRefreshSlot') { kind = 'STRIVEN SOURCE REFRESH ' + TMV3_SOURCE_REFRESH_HOURS.join('/'); status = n === TMV3_SOURCE_REFRESH_HOURS.length ? 'PASS' : 'WARN'; }
     else if (h === 'tmv3_preInspectionContinueEligibleSweep' && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) {
       kind = 'PI FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
     }
