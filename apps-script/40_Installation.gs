@@ -239,7 +239,8 @@ function tmv3_sendInstallMissingSoReminders_(scope) {
 // While ON, it replaces the older plain "Sales Order # missing" reminder.
 var TMV3_INSTALL_NOTICE_ENABLED = false;   // ON after the TEST email is approved
 const TMV3_INSTALL_SO_NOT_APPROVED = Object.freeze({'18':'incomplete','19':'quoted','20':'pending approval'});
-const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 31;
+// Install notices only for events from today through the next 14 days (operator 2026-11-18).
+const TMV3_INSTALL_NOTICE_LOOKAHEAD_DAYS = 14;
 // One-off special projects: booked without a Sales Order on purpose (operator 2026-11-13).
 // Their Install notice never asks for an SO #.
 const TMV3_INSTALL_SPECIAL_PROJECTS = Object.freeze([/^\s*Times\s*-\s*Chatsworth\b/i]);
