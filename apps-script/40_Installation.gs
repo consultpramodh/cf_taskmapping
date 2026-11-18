@@ -2,7 +2,12 @@
 
 // Original: 30_Calendar; Function: tmv3_extractLegacyInstallOrderNumber_
 function tmv3_extractLegacyInstallOrderNumber_(text) {
-  const clean = tmv3_stripPhonesForOrderParsing_(text);
+  // "Task #19883" in the automation's own link block is a Striven Task ID, never a Sales Order
+  // (operator 2026-11-18: Times - Chatsworth events read SO 19883 / 19884 from their Task links).
+  const clean = tmv3_stripPhonesForOrderParsing_(text)
+    .replace(/\bTask\s*(?:ID\s*)?#?\s*\d+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
   if (!clean) return '';
 
   let match = clean.match(
