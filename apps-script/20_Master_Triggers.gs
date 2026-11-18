@@ -76,6 +76,24 @@ function tmv3_standardVerticalSlot_(vertical,slot) {
   if(vertical==='Install') {
     result.reminders=tmv3_installReminderCheck();
   }
-  tmv3_audit_(vertical,'','','STANDARD_DAILY_SLOT',result.status,JSON.stringify({slot:slot,result:result}));
+  tmv3_audit_(vertical,'','','STANDARD_DAILY_SLOT',result.status,tmv3_verticalRunSummary_(slot,result));
   return result;
+}
+
+/** One TM Audit row per run: counts by outcome, plus only the installs that changed or need attention. */
+function tmv3_verticalRunSummary_(slot,result) {
+  const counts={},items=[];
+  (result.results||[]).forEach(function(r){
+    counts[r.status]=(counts[r.status]||0)+1;
+    if(['ALREADY_ALIGNED_READ_ONLY','FULFILLED_NO_RECREATE','SKIPPED_CREATOR_UNVERIFIED'].indexOf(r.status)>=0)return;
+    if(r.status==='VERIFIED_CONVERGENCE' && !(r.executions||[]).some(function(e){return (e.actions||[]).some(function(a){return a!=='VERIFY_CALENDAR_LINKS';});}))return;
+    items.push({eventId:r.eventId,status:r.status,error:String(r.error||'').slice(0,160)||undefined,
+      changes:r.executions?r.executions.map(function(e){return (e.actions||[]).filter(function(a){return a!=='VERIFY_CALENDAR_LINKS';}).join('+');}).join(','):undefined});
+  });
+  const out={slot:slot,status:result.status,checked:Number(result.scanned||0),writes:Number(result.writes||0),
+    pending:Number(result.pending||0),counts:counts,items:items,reminders:result.reminders};
+  let text=JSON.stringify(out);
+  // A Sheets cell holds 50,000 characters.
+  while(text.length>45000 && out.items.length){out.items.length=Math.floor(out.items.length/2);out.itemsTruncated=true;text=JSON.stringify(out);}
+  return text.length>49000?text.slice(0,49000):text;
 }

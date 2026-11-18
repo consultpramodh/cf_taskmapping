@@ -20320,7 +20320,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     if(events.length!==state.total)throw Error('SWEEP_SNAPSHOT_INCOMPLETE_NO_WRITE');
     for(let i=state.cursor;i<events.length;i++) {
       const budget=tmv3_strivenApiBudgetStatus_();
-      if(Date.now()-now>120000){result.status='RUNTIME_CONTINUATION_REQUIRED';break;}
+      if(Date.now()-now>120000 && !(options.deadline && Date.now()<options.deadline) || options.deadline && Date.now()>=options.deadline){result.status='RUNTIME_CONTINUATION_REQUIRED';break;}
       if(budget.exhausted||budget.remaining<Number(policy.verticalProductionMinApiRemaining||60)){result.status='API_BUDGET_WAIT';break;}
       const id=events[i];result.scanned++;
       const key='TMV3_VERTICAL_EVENT_'+tmv3_hash_(vertical+'|'+id);
@@ -20390,7 +20390,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         const message=String(err && err.message || err);
         if(writeStarted)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500)}));
         result.results.push({eventId:id,status:writeStarted?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
-        tmv3_audit_(vertical,id,'','VERTICAL_AUTO',writeStarted?'ATTENTION':'REVIEW',message);
+        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',message);
         if(writeStarted)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
       } finally {
         const outcome=result.results[result.results.length-1]||{status:'UNKNOWN'};
@@ -20399,7 +20399,6 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         else if(outcome.status==='UNCERTAIN_RECONCILIATION_REQUIRED')state.uncertain++;
         else state.review++;
         props.setProperty(stateKey,JSON.stringify(state));
-        tmv3_audit_(vertical,id,'','VERTICAL_SWEEP_EVENT',outcome.status,JSON.stringify(outcome));
       }
     }
     state.complete=state.cursor>=state.total;props.setProperty(stateKey,JSON.stringify(state));
@@ -20535,25 +20534,29 @@ function tmv3_automationSheetRefreshStatus() {
 
 // Workflows whose sweep finishes in follow-on runs instead of waiting for the next slot
 // (operator rule 2026-11-13; Install first). Handler = the one-off follow-on trigger function.
-var TMV3_VERTICAL_FOLLOW_ON = {Install:'tmv3_installSweepContinue'};
+// No follow-on runs: each standard slot is one run (operator 2026-11-18). Unfinished work carries to the next slot.
+var TMV3_VERTICAL_FOLLOW_ON = {};
+// One slot run may spend this long on the sweep, leaving time for Install notices inside the 6-minute limit.
+const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
 
 function tmv3_runFullVerticalSweep_(vertical, options) {
   options = options || {};
   const followOn = !!TMV3_VERTICAL_FOLLOW_ON[vertical];
-  const began=Date.now();let result=tmv3_verticalProductionCycle_(vertical);
+  const began=Date.now();const deadline=began+TMV3_VERTICAL_SWEEP_RUN_MS;
+  let result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
   // Another workflow holds the script lock: keep asking for up to 2 minutes instead of giving up.
   const lockRetries=[];
   while (followOn && result.status==='LOCK_BUSY' && Date.now()-began<120000) {
     Utilities.sleep(15000); lockRetries.push(new Date().toISOString());
-    result=tmv3_verticalProductionCycle_(vertical);
+    result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
   }
   let totalWrites=Number(result.writes||0),totalScanned=Number(result.scanned||0),allResults=(result.results||[]).slice(),batchStatuses=[result.status];
   // A batch can take ~2 minutes, so with follow-ons a new one starts only in the first 2.5 minutes
   // (keeps the whole slot inside Apps Script's 6-minute limit; the rest continues a minute later).
-  const startBy = followOn ? 150000 : 240000;
+  const startBy = followOn ? 150000 : TMV3_VERTICAL_SWEEP_RUN_MS - 20000;
   while (result.pending>0 && result.status!=='API_BUDGET_WAIT' && result.status!=='LOCK_BUSY' &&
       result.scanned>0 && Date.now()-began<startBy) {
-    const before=result.pending,next=tmv3_verticalProductionCycle_(vertical);
+    const before=result.pending,next=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
     batchStatuses.push(next.status);
     totalWrites+=Number(next.writes||0);totalScanned+=Number(next.scanned||0);allResults.push.apply(allResults,next.results||[]);
     result=next;if(!next.scanned || next.pending>=before)break;
