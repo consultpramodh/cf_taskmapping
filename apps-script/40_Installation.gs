@@ -313,6 +313,14 @@ function tmv3_installNoticeEmail_(record, assessment, followupNumber) {
   const when = Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'MMM d, yyyy') + ' · ' +
     Utilities.formatDate(new Date(record.start), TMV3_TIMEZONE, 'h:mm a') + ' – ' + Utilities.formatDate(new Date(record.end), TMV3_TIMEZONE, 'h:mm a');
   const followupLabel = followupNumber ? 'FOLLOW-UP #' + followupNumber : '';
+  // Header badges: what is wrong, in the same badge style as the INSTALL label (operator 2026-11-18).
+  const issueLabels = {SO_NOT_APPROVED:'SO NOT APPROVED', SO_NOT_FOUND:'SO NOT FOUND', SALES_ORDER:'SO # MISSING', LOCATION:'ADDRESS MISSING'};
+  const issueBadges = assessment.missing.map(function(m) { return issueLabels[m.code] || String(m.field || '').toUpperCase(); })
+    .filter(function(x, i, a) { return x && a.indexOf(x) === i; })
+    .map(function(label) {
+      return '<div style="display:inline-block;background:#b42318;color:#ffffff;font-size:11px;font-weight:700;' +
+        'letter-spacing:1px;padding:3px 8px;border-radius:3px;margin:0 6px 8px 0;">' + esc(label) + '</div>';
+    }).join('');
   const items = assessment.missing.map(function(m) {
     return '<div style="color:#B42318;font-weight:700;">❌ ' + esc(m.message) + '</div>'; }).join('');
   const rows = assessment.missing.map(function(m) {
@@ -328,6 +336,7 @@ function tmv3_installNoticeEmail_(record, assessment, followupNumber) {
     '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
     '<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;">' +
     '<tr><td style="background:#202020;border-top:4px solid #b42b2f;padding:18px 24px;">' +
+      issueBadges +
       '<div style="font-size:18px;font-weight:700;color:#ffffff;">' + (followupLabel ? followupLabel + ' — ' : '') + 'Install Update Required</div>' +
       '<div style="font-size:12px;color:#aaaaaa;margin-top:3px;">Classic Fireplace &amp; BBQ Store</div>' +
     '</td></tr>' +
