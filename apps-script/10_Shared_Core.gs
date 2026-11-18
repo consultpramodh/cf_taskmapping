@@ -20288,11 +20288,13 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     const stateKey='TMV3_VERTICAL_SWEEP_'+vertical+(weekScope ? '_RANGE_'+weekScope.fromDay+'_'+weekScope.toDay : '')+(targetIds?'_TARGET_'+tmv3_hash_(targetIds.slice().sort().join('|')):'');
     let state=JSON.parse(props.getProperty(stateKey)||'null');
     if(!state || state.complete) {
-      if(vertical==='Install') {
+      if(vertical==='Install' || vertical==='Delivery') {
         const budget=tmv3_strivenApiBudgetStatus_();
         if(budget.exhausted || budget.remaining<Number(policy.verticalProductionMinApiRemaining||60))return Object.assign(result,{status:'API_BUDGET_WAIT'});
-        result.sources=tmv3_refreshOperationalSourcesIfNeeded_(120,false);
-        result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
+        if(vertical==='Install') {
+          result.sources=tmv3_refreshOperationalSourcesIfNeeded_(120,false);
+          result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
+        } else Object.assign(result,tmv3_deliverySweepIntake_('DELIVERY_SWEEP_START'));
       }
       // Consume the existing intake queue; each event is freshly verified below.
       // Rebuilding every operator sheet here can consume the entire execution.
@@ -20527,7 +20529,7 @@ function tmv3_automationSheetRefreshStatus() {
 
 // Workflows whose sweep finishes in follow-on runs instead of waiting for the next slot
 // (operator rule 2026-11-13; Install first). Handler = the one-off follow-on trigger function.
-var TMV3_VERTICAL_FOLLOW_ON = {Install:'tmv3_installSweepContinue'};
+var TMV3_VERTICAL_FOLLOW_ON = {Install:'tmv3_installSweepContinue',Delivery:'tmv3_deliverySweepContinue'};
 
 function tmv3_runFullVerticalSweep_(vertical, options) {
   options = options || {};
