@@ -43,9 +43,9 @@ var TMV3_PI_GRACE_NEVER_PAST_APPOINTMENT = true;
 // Operator rule 2026-11-12: every eligible event is corrected in the same slot. The old limit of one
 // Task write per batch is off; a per-slot time limit keeps the run inside Apps Script's 6 minutes.
 var TMV3_PI_ONE_WRITE_PER_BATCH = false;
-// When a slot runs out of time, the rest of the sweep continues 1 minute later in a short follow-on
-// run (one-off trigger), repeated until every eligible event is done. Max 12 follow-ons a day.
-var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = true;
+// Operator rule 2026-11-18: each 08:00/13:00/17:00 slot is ONE run. No 1-minute follow-on runs;
+// if a slot runs out of time, the next slot carries on where it stopped. (true = old follow-ons, max 40 a day.)
+var TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE = false;
 // Requested By = the employee who created the event; the calendar owner only as a fallback.
 var TMV3_PI_REQUESTED_BY_CREATOR_FIRST = true;
 // One empty line between the event notes and "-----Striven Links-----" (operator rule 2026-11-13).
@@ -2519,10 +2519,7 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
     });
   });
   if (out.sourceErrors.length) out.status = 'PARTIAL_SOURCE_ACCESS';
-  tmv3_audit_('PreInspection', '', '', 'OFF_SHARED_CANDIDATES', out.status,
-    JSON.stringify({checked:out.checked,candidates:out.candidates,notified:out.notified,liveChecks:out.liveChecks,
-      skippedLiveCap:out.skippedLiveCap,sourceErrors:out.sourceErrors,
-      events:out.events.map(function(e) { return {eventId:e.eventId,source:e.source,status:e.notification.status}; })}));
+  // Reported in the slot's STANDARD_DAILY_SLOT row (operator 2026-11-18: one audit row per run).
   return out;
 }
 
@@ -2682,14 +2679,14 @@ function tmv3_preInspectionContinueEligibleSweep() {
   return result;
 }
 
-/** Schedules one follow-on run in 1 minute (never more than one pending, at most 12 a day). */
+/** Schedules one follow-on run in 1 minute (never more than one pending, at most 40 a day). */
 function tmv3_preInspectionScheduleNextSweep_() {
   if (TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE !== true) return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
   const store = tmv3_piEphemeral_();
   const day = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd');
   const key = 'TMV3_PI_FOLLOW_ON_COUNT_' + day;
   const count = Number(store.get(key) || 0);
-  if (count >= 12) return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
+  if (count >= 40) return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
   tmv3_preInspectionClearContinuationTrigger_();
   ScriptApp.newTrigger('tmv3_preInspectionContinueEligibleSweep').timeBased().after(60000).create();
   store.set(key, String(count + 1), 21600);
@@ -2709,21 +2706,39 @@ function tmv3_installPreInspectionAutomationTrigger() {
 }
 
 function tmv3_preInspectionLogSweep_(slot, result) {
+  // One TM Audit row per run (operator 2026-11-18): the same STANDARD_DAILY_SLOT row as the other workflows.
+  const counts = {};
+  (result.results || []).forEach(function(r) {
+    const k = r.status || r.plan || r.intake || 'UNKNOWN'; counts[k] = (counts[k] || 0) + 1; });
   const summary = {
-    slot:slot,status:result.status,processed:result.processed,
+    slot:slot,status:result.status,checked:result.processed,
     writes:result.writes,notifications:result.notifications,
-    sweep:result.sweep || null,continuation:result.continuation || null,
+    pending:result.sweep ? Number(result.sweep.remaining || 0) : 0,
+    pendingReview:result.sweep ? Number(result.sweep.pendingReview || 0) : 0,
+    counts:counts,continuation:result.continuation || null,
     error:result.error || '',
     calendarReview:result.calendarReview && result.calendarReview.status || 'NOT_RUN',
-    offShared:result.offShared ? {status:result.offShared.status,candidates:result.offShared.candidates,
-      notified:result.offShared.notified} : 'NOT_RUN',
+    offShared:result.offShared ? {status:result.offShared.status,checked:result.offShared.checked,
+      candidates:result.offShared.candidates,notified:result.offShared.notified,
+      events:(result.offShared.events || []).map(function(e) {
+        return {eventId:e.eventId,status:e.notification && e.notification.status || ''}; })} : 'NOT_RUN',
     operatorQueue:result.operatorQueue && result.operatorQueue.status || 'NOT_RUN',
-    attentionEvents:(result.results || []).filter(function(r) {
-      return r.status === 'ATTENTION' || !!r.blocker || !!r.error;
-    }).map(function(r) { return {eventId:r.eventId,status:r.status || '',blocker:r.blocker || '',error:r.error || ''}; })
+    // Only the events that changed something or need attention.
+    items:(result.results || []).filter(function(r) {
+      return r.status === 'ATTENTION' || !!r.blocker || !!r.error || !!r.execution;
+    }).map(function(r) {
+      return {eventId:r.eventId,taskId:r.taskId || undefined,status:r.status || r.plan || '',
+        blocker:String(r.blocker || '').slice(0, 160) || undefined,error:String(r.error || '').slice(0, 160) || undefined,
+        changed:r.execution ? String(r.plan || '') : undefined};
+    })
   };
-  Logger.log(JSON.stringify(summary));
-  tmv3_audit_('PreInspection', '', '', 'PREINSPECTION_SWEEP', result.status || 'UNKNOWN', JSON.stringify(summary));
+  let text = JSON.stringify(summary);
+  // A Sheets cell holds 50,000 characters.
+  while (text.length > 45000 && summary.items.length) {
+    summary.items.length = Math.floor(summary.items.length / 2); summary.itemsTruncated = true; text = JSON.stringify(summary);
+  }
+  Logger.log(text);
+  tmv3_audit_('PreInspection', '', '', 'STANDARD_DAILY_SLOT', result.status || 'UNKNOWN', text.slice(0, 49000));
 }
 
 function tmv3_preInspectionMaybeContinueSweep_(result) {
@@ -2751,7 +2766,8 @@ function tmv3_preInspectionMaybeContinueSweep_(result) {
   return result;
 }
 
-/** One slot: read-only Calendar review, batches until done or ~4 minutes, then publish views. */
+/** One slot = one run: read-only Calendar review, batches until done or the time limit, then publish views.
+ * No follow-on runs; anything left continues at the next slot. */
 function tmv3_runPreInspectionDailySlot_(slot) {
   const gate = tmv3_piStagingDisabled_(); if (gate) return gate;
   tmv3_piAssertLockedStandard_();
@@ -3257,7 +3273,6 @@ function tmv3_preInspectionRefreshOperatorView_() {
     const result = {status:'PI_OPERATOR_VIEW_REFRESHED',at:Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd HH:mm:ss'),
       events:actual.length,mode:'CURRENT_SHARED_CALENDAR_PLUS_CACHED_STRIVEN_SOURCES',
       strivenCalls:0,calendarWrites:0,taskWrites:0};
-    tmv3_audit_('PreInspection', '', '', 'PI_OPERATOR_QUEUE', 'PASS', JSON.stringify(result));
     return result;
   } finally { lock.releaseLock(); }
 }
