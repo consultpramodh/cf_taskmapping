@@ -6,3 +6,4 @@
 - 2026-11-17: Install accepts DELIVERY_APPROVED Sales Orders as a Step 3 anchor (same as Delivery and PreInspection). Trigger: SO585729 was blocked because it was cached only as DELIVERY_APPROVED.
 - 2026-11-17: Customer-number labels with common typos ("cusr#", "cus#", "cst#") parse as a Customer #. They count only at a word start and only when followed by "#".
 - 2026-11-17: Install notice (TMV3_INSTALL_NOTICE_ENABLED) stays OFF until the operator approves piTest_SendInstallNoticeTest() output.
+- 2026-11-18: Install RECREATE_TASK (Sales Order has only completed Install Tasks and a new event is booked, e.g. go-back or warranty visit) accepts a fresh Striven SO status of Approved, In Progress or Completed. Every other Install case still requires Approved; Quoted, Declined, Canceled and Lost are never accepted. Trigger: SO580795 Kerry Warren, Nov 23 warranty visit.

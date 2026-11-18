@@ -14068,8 +14068,10 @@ function tmv3_step7FreshOrderOwnership_(contract, eventRecord) {
   if (contract.vertical === 'PreInspection') return {status:'N/A'};
   const number=tmv3_clean_(eventRecord && eventRecord.orderNumber);
   if (!/^\d+$/.test(number)) throw new Error('FRESH_CALENDAR_ORDER_NUMBER_REQUIRED');
+  const installRecreate=contract.vertical==='Install' &&
+    (contract.actions||[]).indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)!==-1;
   const proof=tmv3_taskFirstFreshOrderOwnershipById_(contract.expectedOrderId,
-    contract.expectedCustomerId,'SO#'+number,contract.vertical);
+    contract.expectedCustomerId,'SO#'+number,contract.vertical,{installRecreate:installRecreate});
   return {status:'VERIFIED',orderId:proof.orderId,customerId:proof.customerId,orderStatus:proof.status};
 }
 
@@ -18959,9 +18961,14 @@ function tmv3_repairExistingTaskRelationships(taskId, vertical, expected, permis
 /** One authoritative GET instead of downloading the entire Work Order report.
  * The order ID, customer ownership and SO number must all agree.
  */
-function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, vertical) {
+function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, vertical, options) {
   if (['Install','Delivery','Service'].indexOf(vertical)<0) throw new Error('ORDER_NOT_VERIFIED_ACTIVE: vertical status policy required.');
   const requiredStatus=vertical==='Service'?'in progress':'approved';
+  // Install RECREATE_TASK (operator 2026-11-18): the SO already has completed Install Tasks and a new
+  // event is booked (go-back / warranty / return visit). The SO is usually Completed or In Progress by
+  // then, so those are accepted for this case only. Quoted, declined, canceled and lost never are.
+  const acceptedStatuses=[requiredStatus].concat(
+    vertical==='Install' && options && options.installRecreate===true ? ['in progress','completed'] : []);
   const id = Number(orderId);
   const cid = tmv3_clean_(customerId);
   if (!Number.isSafeInteger(id) || id <= 0 || !/^[1-9]\d*$/.test(cid)) {
@@ -18992,7 +18999,7 @@ function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, v
   const statusFromId = known[statusId] || '';
   if ((statusId && !statusFromId) ||
       (statusFromId && normalizedName && statusFromId !== normalizedName) ||
-      (statusFromId || normalizedName) !== requiredStatus) {
+      acceptedStatuses.indexOf(statusFromId || normalizedName) < 0) {
     throw new Error('ORDER_NOT_VERIFIED_ACTIVE: canceled, closed, unapproved, unknown or conflicting Order status.');
   }
   const titleOrder = tmv3_taskFirstTitleOrderNumber_(taskName);
@@ -20239,7 +20246,9 @@ function tmv3_verticalEnrichEvidence_(vertical, record, plans) {
   if (!/^[1-9]\d*$/.test(customerId) || !/^\d+$/.test(number)) return {status:'IDENTITY_OR_ORDER_REVIEW'};
   let id=tmv3_clean_(one.expectedOrderId);
   if (!id) id=tmv3_taskFirstFindOrderByTitle_(number,customerId);
-  const proof=tmv3_taskFirstFreshOrderOwnershipById_(id,customerId,'SO#'+number,vertical);
+  const installRecreate=vertical==='Install' && (plans||[]).length>0 && (plans||[]).every(function(p){
+    return p.disposition==='RECREATE_TASK' || (p.actions||[]).indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)!==-1;});
+  const proof=tmv3_taskFirstFreshOrderOwnershipById_(id,customerId,'SO#'+number,vertical,{installRecreate:installRecreate});
   const sheet=tmv3_sheet_(TMV3.SHEETS.ORDERS),values=sheet.getDataRange().getValues();
   const headers=['Order ID','Order Number','Customer ID','Location ID','Contact ID','Status','Name','Order Type','URL','Fingerprint'];
   if (!values.length || JSON.stringify(values[0].slice(0,10))!==JSON.stringify(headers)) throw new Error('ORDER_CACHE_SCHEMA_DRIFT');
