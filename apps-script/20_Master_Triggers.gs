@@ -134,3 +134,141 @@ function tmv3_slotSourceRefresh_() {
     return {status:'LEFT_TO_SOURCE_REFRESH_RUN',lastRunStarted:new Date(at).toISOString()};
   return tmv3_refreshOperationalSourcesIfNeeded_(120, false);
 }
+
+// =====================================================================
+// ORDERED SLOT RUN (2026-11-20). Before this, PreInspection, Install, Delivery and Service each had their
+// own 08:00/13:00/17:00 trigger. Apps Script fires "nearMinute" triggers anywhere in a wide window, so on
+// 2026-11-20 08:00 Install ran 07:24, Service 08:02, PreInspection 08:04 and Delivery 08:39. PreInspection
+// started while Service held the script lock: its Calendar review gave up (PI_REVIEW_LOCK_BUSY) and lock
+// waits used most of its 3-minute batch window, so only 3 events were checked and 4 were left for 13:00.
+// Now ONE trigger per slot starts PreInspection, and each workflow starts the next only when it has
+// finished, always in tmv3_standardDailySchedule_().verticals order, each in its own execution.
+// =====================================================================
+const TMV3_SLOT_CHAIN_KEY = 'TMV3_SLOT_CHAIN';
+const TMV3_SLOT_CHAIN_NEXT_HANDLER = 'tmv3_slotChainNext';
+// Gap between one workflow finishing and the next one starting.
+const TMV3_SLOT_CHAIN_GAP_MS = 60000;
+// A step still marked RUNNING after this long was killed by the Apps Script time limit: move on.
+const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 35 * 60000;
+
+/** Trigger handlers installed by tmv3_installStandardDailyTriggers (one per slot). */
+function tmv3_standardSlot0800() { return tmv3_slotChainStart_('08:00'); }
+function tmv3_standardSlot1300() { return tmv3_slotChainStart_('13:00'); }
+function tmv3_standardSlot1700() { return tmv3_slotChainStart_('17:00'); }
+
+/** The business trigger handlers the standard schedule installs: one per slot hour. */
+function tmv3_standardSlotHandlers_() {
+  return tmv3_standardDailySchedule_().hours.map(function(hour) {
+    return {handler:'tmv3_standardSlot' + ('0' + hour).slice(-2) + '00', hour:hour};
+  });
+}
+
+/** Per-workflow slot handlers from before 2026-11-20. Still callable by hand; no longer installed. */
+function tmv3_legacyVerticalSlotHandlers_() {
+  const schedule = tmv3_standardDailySchedule_(), out = [];
+  schedule.verticals.forEach(function(v) {
+    const prefix = v === 'PreInspection' ? 'preInspection' : v.toLowerCase();
+    schedule.hours.forEach(function(h) { out.push('tmv3_' + prefix + 'Check' + ('0' + h).slice(-2) + '00'); });
+  });
+  return out;
+}
+
+function tmv3_slotChainRead_() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty(TMV3_SLOT_CHAIN_KEY) || 'null'); }
+  catch (ignored) { return null; }
+}
+
+function tmv3_slotChainWrite_(state) {
+  PropertiesService.getScriptProperties().setProperty(TMV3_SLOT_CHAIN_KEY, JSON.stringify(state));
+}
+
+function tmv3_slotChainClearTriggers_() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === TMV3_SLOT_CHAIN_NEXT_HANDLER) ScriptApp.deleteTrigger(t);
+  });
+}
+
+/** Exactly one pending one-off chain trigger at a time. */
+function tmv3_slotChainSchedule_(delayMs) {
+  tmv3_slotChainClearTriggers_();
+  ScriptApp.newTrigger(TMV3_SLOT_CHAIN_NEXT_HANDLER).timeBased().after(Math.max(60000, delayMs)).create();
+}
+
+/** Runs one workflow's standard slot exactly as its own trigger used to. */
+function tmv3_slotChainRunVertical_(vertical, slot) {
+  if (vertical === 'PreInspection') return tmv3_runPreInspectionDailySlot_(slot);
+  return tmv3_standardVerticalSlot_(vertical, slot);
+}
+
+/** Slot trigger: start a new ordered run with the first workflow (PreInspection). */
+function tmv3_slotChainStart_(slot) {
+  const prior = tmv3_slotChainRead_();
+  if (prior && prior.status === 'RUNNING') {
+    // The previous slot never finished its queue. Record which workflows it skipped; the new slot
+    // starts again from PreInspection and each workflow's own sweep carries on where it stopped.
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'ABANDONED', JSON.stringify({slot:prior.slot, day:prior.day,
+      skipped:prior.order.slice(prior.index), current:prior.step || null}));
+  }
+  const state = {slot:slot, day:Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd'),
+    order:tmv3_standardDailySchedule_().verticals.slice(), index:0, status:'RUNNING',
+    startedAt:new Date().toISOString(), steps:[]};
+  tmv3_slotChainWrite_(state);
+  return tmv3_slotChainRunCurrent_(state);
+}
+
+/** One-off trigger: run the next workflow, or move past a step the time limit killed. */
+function tmv3_slotChainNext() {
+  const state = tmv3_slotChainRead_();
+  if (!state || state.status !== 'RUNNING') { tmv3_slotChainClearTriggers_(); return {status:'NO_ACTIVE_SLOT_CHAIN'}; }
+  const step = state.step;
+  if (step && step.status === 'RUNNING') {
+    const age = Date.now() - new Date(step.startedAt).getTime();
+    if (age < TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS) {
+      // Still inside its time limit (should not happen): check again when the limit has passed.
+      tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS - age + 60000);
+      return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical};
+    }
+    step.status = 'TIMED_OUT'; step.finishedAt = new Date().toISOString();
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'STEP_TIMED_OUT', JSON.stringify({slot:state.slot, vertical:step.vertical, startedAt:step.startedAt}));
+    state.steps.push(step); state.step = null; state.index++;
+    tmv3_slotChainWrite_(state);
+  }
+  return tmv3_slotChainRunCurrent_(state);
+}
+
+function tmv3_slotChainRunCurrent_(state) {
+  if (state.index >= state.order.length) {
+    state.status = 'COMPLETE'; state.finishedAt = new Date().toISOString(); state.step = null;
+    tmv3_slotChainWrite_(state); tmv3_slotChainClearTriggers_();
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'COMPLETE', JSON.stringify({slot:state.slot, day:state.day, steps:state.steps}));
+    return {status:'SLOT_CHAIN_COMPLETE', slot:state.slot, steps:state.steps};
+  }
+  const vertical = state.order[state.index];
+  state.step = {vertical:vertical, status:'RUNNING', startedAt:new Date().toISOString()};
+  tmv3_slotChainWrite_(state);
+  // Safety net first: if this execution is killed by the time limit, the one-off trigger moves the chain on.
+  tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS);
+  let result;
+  try { result = tmv3_slotChainRunVertical_(vertical, state.slot) || {}; }
+  catch (err) {
+    result = {status:'ATTENTION', error:String(err && err.message || err).slice(0, 300)};
+    try { tmv3_audit_(vertical, '', '', 'STANDARD_DAILY_SLOT', 'ATTENTION', JSON.stringify({slot:state.slot, error:result.error})); } catch (ignored) {}
+  }
+  // A newer slot may have taken over while this step ran; never overwrite its state.
+  const latest = tmv3_slotChainRead_();
+  if (!latest || latest.startedAt !== state.startedAt) return {status:'SLOT_CHAIN_SUPERSEDED', vertical:vertical, result:result};
+  state.step.status = 'DONE'; state.step.result = String(result.status || 'UNKNOWN');
+  state.step.finishedAt = new Date().toISOString();
+  state.steps.push(state.step); state.step = null; state.index++;
+  tmv3_slotChainWrite_(state);
+  if (state.index >= state.order.length) return tmv3_slotChainRunCurrent_(state);
+  tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_GAP_MS);
+  return {status:'SLOT_CHAIN_STEP_DONE', vertical:vertical, next:state.order[state.index], result:result};
+}
+
+/** READ-ONLY: where the current or last ordered slot run is. */
+function tmv3_slotChainStatus() {
+  const out = {state:tmv3_slotChainRead_(),
+    pendingChainTriggers:ScriptApp.getProjectTriggers().filter(function(t) { return t.getHandlerFunction() === TMV3_SLOT_CHAIN_NEXT_HANDLER; }).length};
+  Logger.log(JSON.stringify(out)); return out;
+}
