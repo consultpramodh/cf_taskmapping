@@ -11740,6 +11740,15 @@ function tmv3_step7ExistingAction_(
     );
   }
 
+  // Neither the appointment nor the Task has a Location: that is not "aligned", it needs review.
+  if (checks.location === 'N/A') {
+    return blocked(
+      'REVIEW_LOCATION_UNRESOLVED',
+      'Task has no Location and the appointment address does not resolve to one Customer-owned Location (' +
+        (expected.locationStatus || 'UNRESOLVED') + '). Do not guess; fix the Calendar address or the Customer Locations.'
+    );
+  }
+
   if (
     checks.order === 'MISMATCH' ||
     checks.location === 'MISMATCH' ||
@@ -11905,6 +11914,12 @@ function tmv3_step7CreatePlan_(
   if (!expected.customerId) {
     plan = 'REVIEW_CREATE_CUSTOMER_UNRESOLVED';
     blocker = 'Task CREATE requires a verified Customer.';
+  } else if (!expected.locationId && expected.locationStatus !== 'CREATE_REQUIRED') {
+    // 2026-11-20 (Install Task 19678): an unresolved Location used to create the Task with no
+    // Location, and later runs then saw nothing to compare and reported it as aligned.
+    plan = 'REVIEW_CREATE_LOCATION_UNRESOLVED';
+    blocker = 'Task CREATE requires a verified Customer-owned Location (' +
+      (expected.locationStatus || 'UNRESOLVED') + ').';
   } else if (
     TMV3.VERTICALS[record.vertical].orderRequired &&
     !expected.orderId

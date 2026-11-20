@@ -11,3 +11,8 @@ Imported 2026-11-10 live source capture as migration baseline. Not tested as a r
 - `tmv3_installStandardDailyTriggers` removes the old per-workflow slot triggers and installs the three slot triggers (business triggers 12 → 3). The per-workflow handlers stay callable by hand.
 - New read-only `tmv3_slotChainStatus()`. Operator trigger checks updated.
 - Base: 2026-11-18 live capture. Requires live-source parity check, backup, and running `tmv3_installStandardDailyTriggers` once after deployment.
+
+## Unreleased — no Task without a Location (2026-11-20, not deployed)
+
+- Problem (Install Task 19678): when the appointment address did not resolve to exactly one Customer-owned Location, Task CREATE went ahead without a Location, and later runs compared "no Location" with "no Location" and reported the Task as aligned. Nothing flagged it.
+- Change (shared Step 7 planner, all workflows): CREATE now stops with `REVIEW_CREATE_LOCATION_UNRESOLVED`, and an existing Task with no Location and no resolvable Location is reported as `REVIEW_LOCATION_UNRESOLVED` instead of aligned. A brand-new job-site address (`CREATE_REQUIRED`) still creates the Location first, as before.
