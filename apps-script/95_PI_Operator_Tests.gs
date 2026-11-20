@@ -481,22 +481,23 @@ function piTest_EndToEndCheck() {
 
   // 3. Triggers: exactly the standard daily schedule, no duplicates, nothing obsolete.
   safe('Triggers', function() {
-    const schedule = tmv3_standardDailySchedule_();
-    const expected = [];
-    schedule.verticals.forEach(function(v) {
-      const prefix = v === 'PreInspection' ? 'preInspection' : v.toLowerCase();
-      schedule.hours.forEach(function(h) { expected.push('tmv3_' + prefix + 'Check' + ('0' + h).slice(-2) + '00'); });
-    });
+    // One trigger per slot runs PreInspection, Install, Delivery, Service in order (2026-11-20).
+    const expected = tmv3_standardSlotHandlers_().map(function(x) { return x.handler; });
+    const legacy = tmv3_legacyVerticalSlotHandlers_();
     const have = {};
     ScriptApp.getProjectTriggers().forEach(function(t) { const h = t.getHandlerFunction(); have[h] = (have[h] || 0) + 1; });
     const missing = expected.filter(function(h) { return !have[h]; });
     const dupes = Object.keys(have).filter(function(h) { return have[h] > 1 && h !== 'tmv3_scheduledSheetRefresh' && h !== 'tmv3_sourceRefreshSlot'; });
     // A pending one-off follow-on run (unfinished sweep) is expected, not extra.
     const extra = Object.keys(have).filter(function(h) { return expected.indexOf(h) < 0 && h !== 'tmv3_scheduledSheetRefresh' && h !== 'tmv3_sourceRefreshSlot' &&
+      !(h === TMV3_SLOT_CHAIN_NEXT_HANDLER && have[h] === 1) &&
       !(h === 'tmv3_preInspectionContinueEligibleSweep' && have[h] === 1 && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) &&
       !(h === 'tmv3_installSweepContinue' && have[h] === 1 && typeof TMV3_VERTICAL_FOLLOW_ON !== 'undefined' && TMV3_VERTICAL_FOLLOW_ON.Install); });
-    const pi = ['tmv3_preInspectionCheck0800', 'tmv3_preInspectionCheck1300', 'tmv3_preInspectionCheck1700'].filter(function(h) { return !have[h]; });
-    add('Triggers: PreInspection 08:00 / 13:00 / 17:00', pi.length ? 'FAIL' : 'PASS', pi.length ? 'missing ' + pi.join(', ') : 'all three installed',
+    const pi = expected.filter(function(h) { return !have[h]; });
+    add('Triggers: ordered slots 08:00 / 13:00 / 17:00 (PreInspection first)', pi.length ? 'FAIL' : 'PASS', pi.length ? 'missing ' + pi.join(', ') : 'all three installed',
+      'Run tmv3_installStandardDailyTriggers');
+    const old = legacy.filter(function(h) { return have[h]; });
+    add('Triggers: no per-workflow slot triggers', old.length ? 'FAIL' : 'PASS', old.length ? 'still installed (run out of order): ' + old.join(', ') : 'none',
       'Run tmv3_installStandardDailyTriggers');
     add('Triggers: all workflows', missing.length || dupes.length ? 'WARN' : 'PASS',
       'expected ' + expected.length + ', missing [' + missing.join(', ') + '], duplicated [' + dupes.join(', ') + ']', 'Run tmv3_installStandardDailyTriggers');
@@ -633,10 +634,9 @@ function piTest_WRITE_FixEvent() {
  * workflow slot actually ran on each of the last 3 days and how it ended (from TM Audit). */
 function piTest_TriggerAudit() {
   const schedule = tmv3_standardDailySchedule_();
-  const prefix = function(v) { return v === 'PreInspection' ? 'preInspection' : v.toLowerCase(); };
   const expected = {};
-  schedule.verticals.forEach(function(v) {
-    schedule.hours.forEach(function(h) { expected['tmv3_' + prefix(v) + 'Check' + ('0' + h).slice(-2) + '00'] = {vertical:v, hour:h}; });
+  tmv3_standardSlotHandlers_().forEach(function(x) {
+    expected[x.handler] = {vertical:schedule.verticals.join(' > '), hour:x.hour};
   });
   const installed = {};
   ScriptApp.getProjectTriggers().forEach(function(t) {
@@ -654,6 +654,7 @@ function piTest_TriggerAudit() {
     let kind = 'EXTRA', status = 'WARN';
     if (h === 'tmv3_scheduledSheetRefresh') { kind = 'SHEET REFRESH 8/13/17'; status = n === 3 ? 'PASS' : 'WARN'; }
     else if (h === 'tmv3_sourceRefreshSlot') { kind = 'STRIVEN SOURCE REFRESH ' + TMV3_SOURCE_REFRESH_HOURS.join('/'); status = n === TMV3_SOURCE_REFRESH_HOURS.length ? 'PASS' : 'WARN'; }
+    else if (h === TMV3_SLOT_CHAIN_NEXT_HANDLER) { kind = 'ORDERED SLOT NEXT STEP (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN'; }
     else if (h === 'tmv3_preInspectionContinueEligibleSweep' && TMV3_PI_CONTINUE_SWEEP_UNTIL_DONE === true) {
       kind = 'PI FOLLOW-ON (one-off, removes itself)'; status = n === 1 ? 'PASS' : 'WARN';
     }
@@ -689,7 +690,8 @@ function piTest_TriggerAudit() {
   days.forEach(function(day) {
     schedule.verticals.forEach(function(v) {
       const cells = schedule.hours.map(function(h) {
-        const due = day + ' ' + ('0' + h).slice(-2) + ':30' <= now;
+        // Workflows now run one after another, so the last one can finish late in the hour.
+        const due = day + ' ' + ('0' + (h + 1)).slice(-2) + ':00' <= now;
         const got = runs[day + '|' + v + '|' + h] || runs[day + '|' + v + '|' + (h - 1)] || [];
         if (!got.length && due) gaps.push(day + ' ' + v + ' ' + h + ':00');
         return h + ':00 ' + (got.length ? got.join(', ') : due ? 'NO RUN' : 'not yet');

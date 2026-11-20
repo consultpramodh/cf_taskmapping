@@ -488,19 +488,17 @@ function tmv3_installCheck1700() { return tmv3_standardVerticalSlot_('Install','
 // Original: 60_Automation; Function: tmv3_installStandardDailyTriggers
 function tmv3_installStandardDailyTriggers() {
   const schedule=tmv3_standardDailySchedule_();
-  const handlers=[];
-  schedule.verticals.forEach(function(v){
-    const prefix=v==='PreInspection'?'preInspection':v.toLowerCase();
-    schedule.hours.forEach(function(hour){handlers.push({handler:'tmv3_'+prefix+'Check'+('0'+hour).slice(-2)+'00',hour:hour});});
-  });
+  // One trigger per slot runs the workflows in order (20_Master_Triggers.gs, 2026-11-20).
+  const handlers=tmv3_standardSlotHandlers_();
   const before=ScriptApp.getProjectTriggers();
-  const obsolete=['tmv3_dailySourceRefresh','tmv3_scheduledSheetRefresh',
+  // The old per-workflow slot triggers fired in random order and fought over the script lock.
+  const obsolete=tmv3_legacyVerticalSlotHandlers_().concat(['tmv3_dailySourceRefresh','tmv3_scheduledSheetRefresh',
     'tmv3_preInspectionContinueEligibleSweep','tmv3_installSweepContinue',
     'tmv3_deliverySweepContinue','tmv3_serviceSweepContinue',
     'tmv3_allVerticalAutomationTick','tmv3_scheduledOperations',
     'tmv3_calendarEventUpdated','tmv3_calendarReconciliationFallback',
     'tmv3_installReminderCheck','tmv3_installPublishView',
-    'tmv3_serviceDeliveryOrderBackfill'];
+    'tmv3_serviceDeliveryOrderBackfill']);
   const removable=before.filter(function(t){return obsolete.indexOf(t.getHandlerFunction())>=0;});
   const retained=before.filter(function(t){return removable.indexOf(t)<0;});
   const missing=handlers.filter(function(spec){return !retained.some(function(t){return t.getHandlerFunction()===spec.handler;});});
@@ -520,7 +518,7 @@ function tmv3_installStandardDailyTriggers() {
     triggers.filter(function(t){return t.handler==='tmv3_scheduledSheetRefresh';}).length!==3 ||
     triggers.filter(function(t){return t.handler==='tmv3_sourceRefreshSlot';}).length!==refreshHours.length ||
     triggers.some(function(t){return obsolete.indexOf(t.handler)>=0 && t.handler!=='tmv3_scheduledSheetRefresh';}))throw Error('STANDARD_SCHEDULE_READBACK_FAILED');
-  const result={status:'STANDARD_DAILY_TRIGGERS_VERIFIED',schedule:schedule,triggers:triggers,businessTriggerCount:12,maintenanceTriggerCount:3+refreshHours.length,sourceRefreshHours:refreshHours};
+  const result={status:'STANDARD_DAILY_TRIGGERS_VERIFIED',schedule:schedule,triggers:triggers,businessTriggerCount:handlers.length,slotOrder:schedule.verticals,maintenanceTriggerCount:3+refreshHours.length,sourceRefreshHours:refreshHours};
   tmv3_statusNotePut_('TMV3_STANDARD_SCHEDULE',JSON.stringify(result));
   return result;
 }
@@ -607,7 +605,8 @@ function tmv3_installPublishView() {
 
 // Original: 60_Automation; Function: tmv3_installReadiness
 function tmv3_installReadiness() {
-  const triggers=tmv3_listTriggers(),handlers=['tmv3_installCheck0800','tmv3_installCheck1300','tmv3_installCheck1700'];
+  // Install runs inside the ordered slot run started by the standard slot triggers.
+  const triggers=tmv3_listTriggers(),handlers=tmv3_standardSlotHandlers_().map(function(x){return x.handler;});
   const rows=tmv3_rows_(TMV3.VERTICALS.Install.sheet),today=tmv3_step6LocalDay_(new Date());
   const upcoming=rows.filter(function(r){return tmv3_clean_(r['Event ID']) && tmv3_step6LocalDay_(r['Calendar Start'])>=today;});
   const issues={};upcoming.forEach(function(r){const status=tmv3_clean_(r['Mapping Status']);issues[status]=(issues[status]||0)+1;});
