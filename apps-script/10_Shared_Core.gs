@@ -3456,7 +3456,7 @@ function tmv3_extractCustomerNumberForVertical_(vertical, text) {
   const s = tmv3_clean_(text);
 
   const labelled = s.match(
-    /(?:Customer|Cust(?:omer)?\s*#?|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
+    /(?:Customer|Cust(?:omer)?\s*#?|\bCus[rt]?\s*#|\bCst\s*#|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
   );
 
   if (labelled) return labelled[1];
@@ -3570,7 +3570,7 @@ function tmv3_extractOrderNumber_(text) {
 function tmv3_extractCustomerNumber_(text) {
   const s = tmv3_clean_(text);
   const m = s.match(
-    /(?:Customer|Cust(?:omer)?\s*#?|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
+    /(?:Customer|Cust(?:omer)?\s*#?|\bCus[rt]?\s*#|\bCst\s*#|C\s*#)\s*(?:#|No\.?|Number)?\s*[:\-]?\s*(\d{3,8})/i
   );
 
   if (m) return m[1];
@@ -5151,7 +5151,9 @@ function tmv3_step3AnchorIndex_() {
 function tmv3_step3AllowedOrderTypes_(vertical) {
   const v = tmv3_clean_(vertical);
 
-  if (v === 'Install') return ['SALES_ORDER'];
+  // Delivery Approved is a later stage of an Approved Sales Order, so it is still a valid
+  // Install anchor (operator 2026-11-17, e.g. SO585729 was blocked as DELIVERY_APPROVED only).
+  if (v === 'Install') return ['SALES_ORDER', 'DELIVERY_APPROVED'];
   if (v === 'Delivery') return ['SALES_ORDER', 'DELIVERY_APPROVED'];
   if (v === 'Service') return ['WORK_ORDER'];
   if (v === 'PreInspection') {
@@ -14066,8 +14068,10 @@ function tmv3_step7FreshOrderOwnership_(contract, eventRecord) {
   if (contract.vertical === 'PreInspection') return {status:'N/A'};
   const number=tmv3_clean_(eventRecord && eventRecord.orderNumber);
   if (!/^\d+$/.test(number)) throw new Error('FRESH_CALENDAR_ORDER_NUMBER_REQUIRED');
+  const installRecreate=contract.vertical==='Install' &&
+    (contract.actions||[]).indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)!==-1;
   const proof=tmv3_taskFirstFreshOrderOwnershipById_(contract.expectedOrderId,
-    contract.expectedCustomerId,'SO#'+number,contract.vertical);
+    contract.expectedCustomerId,'SO#'+number,contract.vertical,{installRecreate:installRecreate});
   return {status:'VERIFIED',orderId:proof.orderId,customerId:proof.customerId,orderStatus:proof.status};
 }
 
@@ -15109,6 +15113,15 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
     }
   });
 
+  if (eventRecord.vertical === 'PreInspection') {
+    // Edit the organizer's copy first: Google propagates organizer edits to guest
+    // copies, while guest-copy description edits may not persist.
+    const organizerId = tmv3_clean_(eventRecord.organizerCalendarId).toLowerCase();
+    copies.sort(function(a, b) {
+      return (String(b.calendarId).toLowerCase() === organizerId) - (String(a.calendarId).toLowerCase() === organizerId);
+    });
+  }
+
   const missing = tmv3_titleMissingRequiredCalendarIds_(ids, copies);
   if (missing.length) {
     throw new Error(
@@ -15141,7 +15154,9 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
       authoritativeCopy.beforeDescription,
       { preserveOldTitle:!recordedLegacy }
     );
-    const savedLegacy = recordedLegacy || (authoritativeCopy.beforeTitle !== desired ? authoritativeCopy.beforeTitle : '');
+    const staleCopy = copies.filter(function(copy) { return tmv3_clean_(copy.beforeTitle) !== desired; })[0];
+    const savedLegacy = recordedLegacy || (authoritativeCopy.beforeTitle !== desired ? authoritativeCopy.beforeTitle : '') ||
+      (staleCopy ? staleCopy.beforeTitle : '');
     authoritativePreInspectionPlan.after = tmv3_preInspectionEnsureLegacyTitle_(
       authoritativePreInspectionPlan.after, savedLegacy
     );
@@ -15189,8 +15204,23 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
 
   const results = [];
 
-  copies.forEach(function(copy) {
+  copies.forEach(function(copy, index) {
     const plan = copy.plan;
+
+    if (eventRecord.vertical === 'PreInspection' && index > 0 && (plan.descriptionChange || plan.titleChange)) {
+      // Google copies the organizer's edit to guest copies after a few seconds.
+      for (let attempt = 0; attempt < 5 && !copy.propagatedFromOrganizer; attempt++) {
+        if (attempt) Utilities.sleep(2000);
+        const propagated = tmv3_findEventCopyRobust_(copy.calendarId, contract.eventId);
+        if (propagated && propagated.event &&
+            String(propagated.event.getDescription() || '') === plan.after &&
+            tmv3_clean_(propagated.event.getTitle()) === desired) {
+          plan.descriptionChange = false;
+          plan.titleChange = false;
+          copy.propagatedFromOrganizer = true;
+        }
+      }
+    }
 
     if (plan.descriptionChange) {
       copy.event.setDescription(plan.after);
@@ -15245,6 +15275,7 @@ function tmv3_operationNormalizeCalendarTitle_(bundle, contract, scope) {
     results.push({
       calendarId:copy.calendarId,
       status:
+        copy.propagatedFromOrganizer ? 'PROPAGATED_FROM_ORGANIZER_VERIFIED' :
         !plan.titleChange && !plan.descriptionChange
           ? 'ALREADY_CORRECT'
           : 'WRITTEN_AND_VERIFIED',
@@ -16093,6 +16124,139 @@ function tmv3_buildCreateSource_(bundle, action) {
 
 
 
+
+// Status notes (last result, last refresh, last error) are logs, not settings: they live in
+// CacheService for 6 hours. The TM Audit sheet keeps the permanent record.
+// Every notification says which workflow it is from (operator rule 2026-11-13): subject prefix
+// plus a coloured header bar and label. Pre-Inspection keeps its red; the others get their own.
+var TMV3_NOTIFICATION_BRANDS = {
+  PreInspection:{label:'PRE-INSPECTION',color:'#b42b2f'},
+  Install:{label:'INSTALL',color:'#1f5fa8'},
+  Delivery:{label:'DELIVERY',color:'#2e7d32'},
+  Service:{label:'SERVICE',color:'#c26a00'}
+};
+
+function tmv3_brandSubject_(vertical, subject) {
+  const b = TMV3_NOTIFICATION_BRANDS[vertical];
+  const s = String(subject || '');
+  return !b || s.indexOf('[' + b.label + ']') >= 0 ? s : '[' + b.label + '] ' + s;
+}
+
+/** Brand an email {subject, htmlBody}: subject prefix; standard header gets the workflow colour and a
+ * label badge; any other HTML gets the badge at the top. Applied at send time; templates are unchanged. */
+function tmv3_brandNotification_(vertical, email) {
+  const b = TMV3_NOTIFICATION_BRANDS[vertical];
+  if (!b || !email) return email;
+  const badge = '<div style="display:inline-block;background:' + b.color + ';color:#ffffff;font-size:11px;font-weight:700;' +
+    'letter-spacing:1px;padding:3px 8px;border-radius:3px;margin-bottom:8px;">' + b.label + '</div>';
+  let html = String(email.htmlBody || '');
+  if (html.indexOf('>' + b.label + '</div>') < 0) {
+    const header = /<td style="background:#202020;border-top:4px solid #[0-9a-f]{6};padding:18px 24px;">/i;
+    if (header.test(html)) {
+      html = html.replace(header, '<td style="background:#202020;border-top:4px solid ' + b.color + ';padding:18px 24px;">' + badge + '<br>');
+    } else if (html) {
+      html = badge + html;
+    }
+  }
+  return Object.assign({}, email, {subject:tmv3_brandSubject_(vertical, email.subject), htmlBody:html});
+}
+
+// Daily "missing Striven links" digest across all four workflows, to the operator ONLY
+// (operator rule 2026-11-13). Read-only: lists upcoming customer events whose description has
+// no Striven Task link. Sent once a day from the 13:00 sheet refresh, weekdays only.
+var TMV3_LINKS_DIGEST_ENABLED = true;
+const TMV3_LINKS_DIGEST_TO = 'pramodh@classicfireplace.ca';
+const TMV3_LINKS_DIGEST_DAYS = 14;
+
+/** Upcoming events (today .. +14 days) with no Striven Task link, per workflow. Never writes. */
+function tmv3_missingLinksScan_() {
+  const from = new Date(); from.setHours(0, 0, 0, 0);
+  const to = new Date(from); to.setDate(to.getDate() + TMV3_LINKS_DIGEST_DAYS);
+  const now = Date.now(), out = {rows:[], unreadable:[]};
+  ['PreInspection', 'Install', 'Delivery', 'Service'].forEach(function(v) {
+    const cfg = TMV3.VERTICALS[v];
+    // Pre-Inspection: CF Preinspects only (the source of truth); others: their own calendars.
+    const cals = v === 'PreInspection' ? [{calendarId:cfg.primaryCalendarId, calendarName:'CF Preinspects', role:'PRIMARY_SHARED'}]
+      : tmv3_verticalCalendars_(v, cfg);
+    cals.forEach(function(calCfg) {
+      let cal = null; try { cal = CalendarApp.getCalendarById(calCfg.calendarId); } catch (e) {}
+      if (!cal) { out.unreadable.push(v + ': ' + (calCfg.calendarName || calCfg.technician || calCfg.calendarId)); return; }
+      cal.getEvents(from, to).forEach(function(ev) {
+        if (ev.isAllDayEvent && ev.isAllDayEvent()) return;
+        if (ev.getEndTime().getTime() < now) return;
+        const desc = String(ev.getDescription() || '');
+        if (/TaskID=\d+/i.test(desc)) return;
+        const title = String(ev.getTitle() || ''), loc = String(ev.getLocation() || '');
+        // Customer appointments only: needs an address, a phone or a customer number.
+        if (!loc && !/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/.test(title + ' ' + desc) && !/\b\d{5}\b/.test(title)) return;
+        if (/\b(?:meeting|do not book|lunch|holiday|vacation|off)\b/i.test(title)) return;
+        out.rows.push({vertical:v, calendar:calCfg.calendarName || calCfg.technician || '', title:title,
+          start:ev.getStartTime(), location:loc, url:tmv3_calendarEventUrl_(ev.getId(), calCfg.calendarId)});
+      });
+    });
+  });
+  out.rows.sort(function(a, b) { return a.start - b.start; });
+  return out;
+}
+
+/** The digest email (standard layout; each row carries its workflow label). */
+function tmv3_missingLinksDigestEmail_(scan) {
+  const esc = tmv3_calendarHtmlEscape_;
+  const fmt = function(d) { return Utilities.formatDate(d, TMV3_TIMEZONE, 'EEE MMM d · h:mm a'); };
+  const counts = {};
+  scan.rows.forEach(function(r) { counts[r.vertical] = (counts[r.vertical] || 0) + 1; });
+  const summary = Object.keys(counts).map(function(v) { return TMV3_NOTIFICATION_BRANDS[v].label + ' ' + counts[v]; }).join(' · ');
+  const rows = scan.rows.map(function(r) {
+    const b = TMV3_NOTIFICATION_BRANDS[r.vertical];
+    return '<tr><td valign="top" style="padding:10px;border:1px solid #dddddd;"><span style="display:inline-block;background:' + b.color +
+      ';color:#fff;font-size:11px;font-weight:700;padding:2px 6px;border-radius:3px;">' + b.label + '</span>' +
+      (r.calendar && r.vertical === 'Service' ? '<br><span style="font-size:12px;color:#666;">' + esc(r.calendar) + '</span>' : '') +
+      '</td><td valign="top" style="padding:10px;border:1px solid #dddddd;white-space:nowrap;">' + esc(fmt(r.start)) +
+      '</td><td valign="top" style="padding:10px;border:1px solid #dddddd;"><a href="' + esc(r.url) + '">' + esc(r.title || '(untitled)') + '</a>' +
+      (r.location ? '<br><span style="font-size:12px;color:#666;">' + esc(r.location) + '</span>' : '') + '</td></tr>';
+  }).join('');
+  const html = '<!doctype html><html lang="en"><body style="margin:0;padding:0;background:#f4f3f1;font-family:Arial,Helvetica,sans-serif;color:#222;">' +
+    '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0"><tr><td align="center" style="padding:20px 12px;">' +
+    '<table role="presentation" width="760" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:760px;background:#ffffff;">' +
+    '<tr><td style="background:#202020;border-top:4px solid #202020;padding:18px 24px;">' +
+      '<div style="font-size:18px;font-weight:700;color:#ffffff;">Events missing Striven links</div>' +
+      '<div style="font-size:12px;color:#aaaaaa;margin-top:3px;">Classic Fireplace &amp; BBQ Store · next ' + TMV3_LINKS_DIGEST_DAYS + ' days · ' + esc(summary) + '</div></td></tr>' +
+    '<tr><td style="padding:18px 24px 8px;"><div style="font-size:12px;color:#666;font-style:italic;">Automated daily check. Sent only to you. Nothing was changed.</div></td></tr>' +
+    '<tr><td style="padding:0 24px 20px;"><table width="100%" cellspacing="0" cellpadding="0" border="0" style="border-collapse:collapse;border:1px solid #dddddd;font-size:13px;">' +
+      '<tr><td style="background:#f3f3f3;padding:10px;font-weight:700;border:1px solid #dddddd;">Workflow</td><td style="background:#f3f3f3;padding:10px;font-weight:700;border:1px solid #dddddd;">When</td>' +
+      '<td style="background:#f3f3f3;padding:10px;font-weight:700;border:1px solid #dddddd;">Event (opens the calendar)</td></tr>' + rows + '</table>' +
+      (scan.unreadable.length ? '<div style="font-size:12px;color:#B42318;margin-top:10px;">Could not read: ' + esc(scan.unreadable.join(', ')) + '</div>' : '') +
+    '</td></tr>' +
+    '<tr><td style="background:#202020;padding:12px 24px;text-align:center;"><div style="font-size:12px;font-weight:700;color:#ffffff;">Classic Fireplace &amp; BBQ Store</div></td></tr>' +
+    '</table></td></tr></table></body></html>';
+  return {to:TMV3_LINKS_DIGEST_TO, subject:'[ALL WORKFLOWS] ' + scan.rows.length + ' event(s) missing Striven links | ' + summary,
+    body:scan.rows.map(function(r) { return '[' + TMV3_NOTIFICATION_BRANDS[r.vertical].label + '] ' + fmt(r.start) + ' — ' + r.title + ' — ' + r.url; }).join('\n'),
+    htmlBody:html};
+}
+
+/** Send the digest once a day (only to TMV3_LINKS_DIGEST_TO). force=true resends today. */
+function tmv3_sendMissingLinksDigest_(force) {
+  if (TMV3_LINKS_DIGEST_ENABLED !== true) return {status:'LINKS_DIGEST_OFF'};
+  const now = new Date();
+  if (!force && (now.getDay() === 0 || now.getDay() === 6)) return {status:'WEEKEND'};
+  const props = PropertiesService.getScriptProperties(), today = Utilities.formatDate(now, TMV3_TIMEZONE, 'yyyy-MM-dd');
+  if (!force && props.getProperty('TMV3_LINKS_DIGEST_LAST') === today) return {status:'ALREADY_SENT_TODAY'};
+  const scan = tmv3_missingLinksScan_();
+  props.setProperty('TMV3_LINKS_DIGEST_LAST', today);
+  if (!scan.rows.length && !scan.unreadable.length) return {status:'ALL_EVENTS_LINKED',sent:0};
+  const mail = tmv3_missingLinksDigestEmail_(scan);
+  if (mail.to !== 'pramodh@classicfireplace.ca') throw new Error('LINKS_DIGEST_RECIPIENT_CHANGED');
+  MailApp.sendEmail({to:mail.to, subject:mail.subject, body:mail.body, htmlBody:mail.htmlBody, name:'Classic Fireplace & BBQ Store'});
+  tmv3_audit_('SYSTEM', '', '', 'MISSING_LINKS_DIGEST', 'SENT', JSON.stringify({count:scan.rows.length, unreadable:scan.unreadable}));
+  return {status:'SENT',sent:1,count:scan.rows.length};
+}
+
+function tmv3_statusNotePut_(key, value) {
+  try { CacheService.getScriptCache().put(key, String(value || ''), 21600); } catch (ignored) {}
+}
+function tmv3_statusNoteGet_(key) {
+  try { return CacheService.getScriptCache().get(key) || null; } catch (ignored) { return null; }
+}
 
 function tmv3_durableWriteGuardKey_(kind, identity) {
   return (
@@ -18797,9 +18961,14 @@ function tmv3_repairExistingTaskRelationships(taskId, vertical, expected, permis
 /** One authoritative GET instead of downloading the entire Work Order report.
  * The order ID, customer ownership and SO number must all agree.
  */
-function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, vertical) {
+function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, vertical, options) {
   if (['Install','Delivery','Service'].indexOf(vertical)<0) throw new Error('ORDER_NOT_VERIFIED_ACTIVE: vertical status policy required.');
   const requiredStatus=vertical==='Service'?'in progress':'approved';
+  // Install RECREATE_TASK (operator 2026-11-18): the SO already has completed Install Tasks and a new
+  // event is booked (go-back / warranty / return visit). The SO is usually Completed or In Progress by
+  // then, so those are accepted for this case only. Quoted, declined, canceled and lost never are.
+  const acceptedStatuses=[requiredStatus].concat(
+    vertical==='Install' && options && options.installRecreate===true ? ['in progress','completed'] : []);
   const id = Number(orderId);
   const cid = tmv3_clean_(customerId);
   if (!Number.isSafeInteger(id) || id <= 0 || !/^[1-9]\d*$/.test(cid)) {
@@ -18830,7 +18999,7 @@ function tmv3_taskFirstFreshOrderOwnershipById_(orderId, customerId, taskName, v
   const statusFromId = known[statusId] || '';
   if ((statusId && !statusFromId) ||
       (statusFromId && normalizedName && statusFromId !== normalizedName) ||
-      (statusFromId || normalizedName) !== requiredStatus) {
+      acceptedStatuses.indexOf(statusFromId || normalizedName) < 0) {
     throw new Error('ORDER_NOT_VERIFIED_ACTIVE: canceled, closed, unapproved, unknown or conflicting Order status.');
   }
   const titleOrder = tmv3_taskFirstTitleOrderNumber_(taskName);
@@ -19775,7 +19944,12 @@ function tmv3_serviceDeliveryOrderBackfill() {
 }
 
 
+// The Oct 20 2026 one-time Service/Delivery Sales Order backlog is retired, so it no
+// longer runs each slot or needs its 81 TMV3_SD_ORDER_BACKFILL_20261020_* Script Properties.
+var TMV3_SD_ORDER_BACKFILL_RETIRED = true;
+
 function tmv3_serviceDeliveryOrderBackfill_(props) {
+  if (TMV3_SD_ORDER_BACKFILL_RETIRED) return null;
   const ids = [18374,18471,18733,18735,18754,18774,18801,18806,18831,18896,18897,18908,18913,18914,18979,19037,19064,19098,19109,19126,19137,19190,19195,19198,19201,19203,19204,19205,19214,19218,19221,19222,19223,19224,19225,19226,19227,19228,19229,19230,19231,19232,19233,19234,19235,19240,19241,19242,19248,19249,19250,19251,19252,19253,19255,19256,19257,19258,19259,19260,19261,19262,19263,19264,19265,19266,19267,19268,19269,19270,19272,19273,19274,19275,19276,19279,19280,19281,19282,19283,19284];
   const prefix = 'TMV3_SD_ORDER_BACKFILL_20261020_';
   const handler = 'tmv3_serviceDeliveryOrderBackfill';
@@ -20072,7 +20246,9 @@ function tmv3_verticalEnrichEvidence_(vertical, record, plans) {
   if (!/^[1-9]\d*$/.test(customerId) || !/^\d+$/.test(number)) return {status:'IDENTITY_OR_ORDER_REVIEW'};
   let id=tmv3_clean_(one.expectedOrderId);
   if (!id) id=tmv3_taskFirstFindOrderByTitle_(number,customerId);
-  const proof=tmv3_taskFirstFreshOrderOwnershipById_(id,customerId,'SO#'+number,vertical);
+  const installRecreate=vertical==='Install' && (plans||[]).length>0 && (plans||[]).every(function(p){
+    return p.disposition==='RECREATE_TASK' || (p.actions||[]).indexOf(TMV3_STEP7_ACTION.RECREATE_TASK)!==-1;});
+  const proof=tmv3_taskFirstFreshOrderOwnershipById_(id,customerId,'SO#'+number,vertical,{installRecreate:installRecreate});
   const sheet=tmv3_sheet_(TMV3.SHEETS.ORDERS),values=sheet.getDataRange().getValues();
   const headers=['Order ID','Order Number','Customer ID','Location ID','Contact ID','Status','Name','Order Type','URL','Fingerprint'];
   if (!values.length || JSON.stringify(values[0].slice(0,10))!==JSON.stringify(headers)) throw new Error('ORDER_CACHE_SCHEMA_DRIFT');
@@ -20123,7 +20299,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
       if(vertical==='Install') {
         const budget=tmv3_strivenApiBudgetStatus_();
         if(budget.exhausted || budget.remaining<Number(policy.verticalProductionMinApiRemaining||60))return Object.assign(result,{status:'API_BUDGET_WAIT'});
-        result.sources=tmv3_refreshOperationalSourcesIfNeeded_(120,false);
+        result.sources=tmv3_slotSourceRefresh_();
         result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
       }
       // Consume the existing intake queue; each event is freshly verified below.
@@ -20144,7 +20320,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     if(events.length!==state.total)throw Error('SWEEP_SNAPSHOT_INCOMPLETE_NO_WRITE');
     for(let i=state.cursor;i<events.length;i++) {
       const budget=tmv3_strivenApiBudgetStatus_();
-      if(Date.now()-now>120000){result.status='RUNTIME_CONTINUATION_REQUIRED';break;}
+      if(Date.now()-now>120000 && !(options.deadline && Date.now()<options.deadline) || options.deadline && Date.now()>=options.deadline){result.status='RUNTIME_CONTINUATION_REQUIRED';break;}
       if(budget.exhausted||budget.remaining<Number(policy.verticalProductionMinApiRemaining||60)){result.status='API_BUDGET_WAIT';break;}
       const id=events[i];result.scanned++;
       const key='TMV3_VERTICAL_EVENT_'+tmv3_hash_(vertical+'|'+id);
@@ -20206,14 +20382,15 @@ function tmv3_verticalProductionCycle_(vertical, options) {
             executions.push({taskId:execution.taskId||plan.taskId,status:execution.status,actions:plan.actions,readbackVerified:true});
           }finally{delete tmv3_verticalProductionCycle_.context;}
         }
-        props.setProperty(key,JSON.stringify({state:'VERIFIED',at:Date.now(),fingerprint:record.fingerprint,taskIds:executions.map(function(x){return x.taskId;})}));
+        // Verified: nothing left to hold. The TM Audit sheet keeps the history.
+        props.deleteProperty(key);
         result.status='VERIFIED_CONVERGENCE';result.transactionsVerified=Number(result.transactionsVerified||0)+1;result.writes+=noTaskActions?0:1;result.results.push({eventId:id,status:'VERIFIED_CONVERGENCE',executions:executions});
         tmv3_audit_(vertical,id,'','VERTICAL_AUTO','PASS',JSON.stringify(result.results[result.results.length-1]));
       } catch(err) {
         const message=String(err && err.message || err);
         if(writeStarted)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500)}));
         result.results.push({eventId:id,status:writeStarted?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
-        tmv3_audit_(vertical,id,'','VERTICAL_AUTO',writeStarted?'ATTENTION':'REVIEW',message);
+        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',message);
         if(writeStarted)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
       } finally {
         const outcome=result.results[result.results.length-1]||{status:'UNKNOWN'};
@@ -20222,7 +20399,6 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         else if(outcome.status==='UNCERTAIN_RECONCILIATION_REQUIRED')state.uncertain++;
         else state.review++;
         props.setProperty(stateKey,JSON.stringify(state));
-        tmv3_audit_(vertical,id,'','VERTICAL_SWEEP_EVENT',outcome.status,JSON.stringify(outcome));
       }
     }
     state.complete=state.cursor>=state.total;props.setProperty(stateKey,JSON.stringify(state));
@@ -20231,7 +20407,7 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     return result;
   } finally {
     delete tmv3_verticalProductionCycle_.context;
-    PropertiesService.getScriptProperties().setProperty('TMV3_VERTICAL_RESULT_'+vertical,JSON.stringify(Object.assign({},result,{results:result.results.slice(-8)})));
+    tmv3_statusNotePut_('TMV3_VERTICAL_RESULT_'+vertical,JSON.stringify(Object.assign({},result,{results:result.results.slice(-8)})));
     lock.releaseLock();
   }
 }
@@ -20252,7 +20428,7 @@ function tmv3_verticalAutomationFailureAlert_(vertical,eventId,error) {
   props.setProperty(key,'SENDING');
   try{
     MailApp.sendEmail({to:TMV3.OPERATIONS.verticalFailureAlertEmail,
-      subject:vertical+' automation: action required',
+      subject:tmv3_brandSubject_(vertical,vertical+' automation: action required'),
       body:'This is an automated email notification from Classic Fireplace & BBQ Store.\n\nHi Pramodh,\n\n'+vertical+' could not verify an automatic transaction.\nEvent: '+eventId+'\n'+error+'\n\nThe record remains held. An uncertain write must be reconciled before retrying.',
       name:'Classic Fireplace & BBQ Store'});
     props.setProperty(key,'SENT');return {status:'SENT'};
@@ -20263,7 +20439,7 @@ function tmv3_fourVerticalAutomationStatus() {
   const props=PropertiesService.getScriptProperties(),policy=TMV3.OPERATIONS;
   const verticals={PreInspection:{enabled:tmv3_operationWritesEnabled_('PREINSPECTIONAUTO'),hours:[8,13,17]}};
   ['Service','Delivery','Install'].forEach(function(v){
-    let recent=null;try{recent=JSON.parse(props.getProperty('TMV3_VERTICAL_RESULT_'+v)||'null');}catch(ignored){}
+    let recent=null;try{recent=JSON.parse(tmv3_statusNoteGet_('TMV3_VERTICAL_RESULT_'+v)||'null');}catch(ignored){}
     verticals[v]={enabled:TMV3.MODE==='PRODUCTION_WRITE' && policy.verticalProductionEnabled===true &&
       (policy.verticalProductionVerticals||[]).indexOf(v)>=0,requiredSalesOrderStatus:v==='Service'?'In Progress':'Approved',recent:recent};
   });
@@ -20318,12 +20494,12 @@ function tmv3_refreshAutomationSheets() {
       completedAt:new Date().toISOString(),timezone:TMV3_TIMEZONE,rows:counts,
       projectionVerified:true,timestampReadbackVerified:true,sourceMode:'CURRENT_CALENDAR_AND_LOCAL_STRIVEN_CACHE',
       strivenWrites:0,calendarWrites:0,morningOps:morning};
-    props.setProperty('TMV3_SHEET_REFRESH_LAST_SUCCESS',JSON.stringify(result));
-    props.deleteProperty('TMV3_SHEET_REFRESH_PENDING');props.deleteProperty('TMV3_SHEET_REFRESH_LAST_ERROR');
+    tmv3_statusNotePut_('TMV3_SHEET_REFRESH_LAST_SUCCESS',JSON.stringify(result));
+    props.deleteProperty('TMV3_SHEET_REFRESH_PENDING');tmv3_statusNotePut_('TMV3_SHEET_REFRESH_LAST_ERROR','');
     tmv3_audit_('SYSTEM','','','AUTOMATIC_SHEET_REFRESH','PASS',JSON.stringify(result));
     Logger.log(JSON.stringify(result));return result;
   } catch(err) {
-    props.setProperty('TMV3_SHEET_REFRESH_LAST_ERROR',JSON.stringify({at:new Date().toISOString(),error:String(err && err.message || err)}));
+    tmv3_statusNotePut_('TMV3_SHEET_REFRESH_LAST_ERROR',JSON.stringify({at:new Date().toISOString(),error:String(err && err.message || err)}));
     tmv3_audit_('SYSTEM','','','AUTOMATIC_SHEET_REFRESH','ATTENTION',String(err && err.message || err));
     throw err;
   } finally {lock.releaseLock();}
@@ -20332,7 +20508,7 @@ function tmv3_refreshAutomationSheets() {
 
 function tmv3_automationSheetRefreshStatus() {
   const p=PropertiesService.getScriptProperties();
-  function json(key){const value=p.getProperty(key);return value?JSON.parse(value):null;}
+  function json(key){const value=tmv3_statusNoteGet_(key);return value?JSON.parse(value):null;}
   return {version:TMV3.VERSION,lastSuccess:json('TMV3_SHEET_REFRESH_LAST_SUCCESS'),
     lastError:json('TMV3_SHEET_REFRESH_LAST_ERROR'),pending:p.getProperty('TMV3_SHEET_REFRESH_PENDING')==='true',
     triggers:tmv3_listTriggers()};
@@ -20356,31 +20532,72 @@ function tmv3_automationSheetRefreshStatus() {
 
 // Google Apps Script: resume the same daily sweep; no additional recurring window.
 
-function tmv3_runFullVerticalSweep_(vertical) {
-  const began=Date.now();let result=tmv3_verticalProductionCycle_(vertical);
+// Workflows whose sweep finishes in follow-on runs instead of waiting for the next slot
+// (operator rule 2026-11-13; Install first). Handler = the one-off follow-on trigger function.
+// No follow-on runs: each standard slot is one run (operator 2026-11-18). Unfinished work carries to the next slot.
+var TMV3_VERTICAL_FOLLOW_ON = {};
+// One slot run may spend this long on the sweep, leaving time for Install notices inside the 6-minute limit.
+const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
+
+function tmv3_runFullVerticalSweep_(vertical, options) {
+  options = options || {};
+  const followOn = !!TMV3_VERTICAL_FOLLOW_ON[vertical];
+  const began=Date.now();const deadline=began+TMV3_VERTICAL_SWEEP_RUN_MS;
+  let result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
+  // Another workflow holds the script lock: keep asking for up to 2 minutes instead of giving up.
+  // Every workflow waits (operator 2026-11-18: one run per slot, so a LOCK_BUSY slot would do nothing).
+  // The wait comes out of the same run deadline, so the slot still ends inside 6 minutes.
+  const lockRetries=[];
+  while (result.status==='LOCK_BUSY' && Date.now()-began<120000) {
+    Utilities.sleep(15000); lockRetries.push(new Date().toISOString());
+    result=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
+  }
   let totalWrites=Number(result.writes||0),totalScanned=Number(result.scanned||0),allResults=(result.results||[]).slice(),batchStatuses=[result.status];
+  // A batch can take ~2 minutes, so with follow-ons a new one starts only in the first 2.5 minutes
+  // (keeps the whole slot inside Apps Script's 6-minute limit; the rest continues a minute later).
+  const startBy = followOn ? 150000 : TMV3_VERTICAL_SWEEP_RUN_MS - 20000;
   while (result.pending>0 && result.status!=='API_BUDGET_WAIT' && result.status!=='LOCK_BUSY' &&
-      result.scanned>0 && Date.now()-began<240000) {
-    const before=result.pending,next=tmv3_verticalProductionCycle_(vertical);
+      result.scanned>0 && Date.now()-began<startBy) {
+    const before=result.pending,next=tmv3_verticalProductionCycle_(vertical,{deadline:deadline});
     batchStatuses.push(next.status);
     totalWrites+=Number(next.writes||0);totalScanned+=Number(next.scanned||0);allResults.push.apply(allResults,next.results||[]);
     result=next;if(!next.scanned || next.pending>=before)break;
   }
   result.batchStatuses=batchStatuses;
+  if(lockRetries.length)result.lockRetries=lockRetries.length;
   result.writes=totalWrites;result.scanned=totalScanned;result.results=allResults;
-  if(result.status==='LOCK_BUSY'||result.pending>0) result.continuation='DEFERRED_TO_NEXT_STANDARD_SLOT';
+  if(result.status==='LOCK_BUSY'||result.pending>0) {
+    result.continuation='DEFERRED_TO_NEXT_STANDARD_SLOT';
+    if(followOn && result.status!=='API_BUDGET_WAIT') {
+      try { result.continuation=tmv3_verticalScheduleFollowOn_(vertical); }
+      catch(err) { result.continuation='FOLLOW_ON_SCHEDULING_FAILED: '+String(err && err.message || err).slice(0,160); }
+    }
+  }
   PropertiesService.getScriptProperties().setProperty('TMV3_SHEET_REFRESH_PENDING','true');
   result.sheetRefresh={status:'DEFERRED_TO_NEXT_STANDARD_SLOT'};
   if(vertical==='Install' && result.sweep && result.sweep.complete)result.sheetRefresh=tmv3_installSchedulePublication_();
   Logger.log(JSON.stringify(result));return result;
 }
 
+/** One follow-on run in 1 minute for this workflow (never more than one pending, max 12 a day). */
+function tmv3_verticalScheduleFollowOn_(vertical) {
+  const handler=TMV3_VERTICAL_FOLLOW_ON[vertical];
+  if(!handler)return 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+  const day=Utilities.formatDate(new Date(),TMV3_TIMEZONE,'yyyy-MM-dd');
+  const key='TMV3_'+vertical.toUpperCase()+'_FOLLOW_ON_COUNT_'+day;
+  let count=0;try{count=Number(CacheService.getScriptCache().get(key)||0);}catch(ignored){}
+  if(count>=12)return 'DEFERRED_TO_NEXT_STANDARD_SLOT_FOLLOW_ON_LIMIT';
+  tmv3_verticalClearFollowOn_(vertical);
+  ScriptApp.newTrigger(handler).timeBased().after(60000).create();
+  try{CacheService.getScriptCache().put(key,String(count+1),21600);}catch(ignored){}
+  return 'FOLLOW_ON_SCHEDULED_IN_1_MINUTE';
+}
 
-
-
-
-
-
+function tmv3_verticalClearFollowOn_(vertical) {
+  const handler=TMV3_VERTICAL_FOLLOW_ON[vertical];
+  if(!handler)return;
+  ScriptApp.getProjectTriggers().forEach(function(t){if(t.getHandlerFunction()===handler)ScriptApp.deleteTrigger(t);});
+}
 
 function tmv3_verticalPatchDiagnostics(vertical,eventIds) {
   if(['Install','Delivery','Service'].indexOf(vertical)<0)throw Error('VERTICAL_REQUIRED');
@@ -20394,7 +20611,7 @@ function tmv3_fullVerticalSweepStatus() {
   const p=PropertiesService.getScriptProperties(),out={version:TMV3.VERSION,budget:tmv3_strivenApiBudgetStatus_(),verticals:{},triggers:tmv3_listTriggers()};
   ['Install','Delivery','Service'].forEach(function(v){
     const state=JSON.parse(p.getProperty('TMV3_VERTICAL_SWEEP_'+v)||'null');
-    const recent=JSON.parse(p.getProperty('TMV3_VERTICAL_RESULT_'+v)||'null');
+    const recent=JSON.parse(tmv3_statusNoteGet_('TMV3_VERTICAL_RESULT_'+v)||'null');
     out.verticals[v]={sweep:state,recent:recent};
   });return out;
 }
