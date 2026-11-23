@@ -20567,8 +20567,10 @@ function tmv3_runFullVerticalSweep_(vertical, options) {
   if(lockRetries.length)result.lockRetries=lockRetries.length;
   result.writes=totalWrites;result.scanned=totalScanned;result.results=allResults;
   if(result.status==='LOCK_BUSY'||result.pending>0) {
-    result.continuation='DEFERRED_TO_NEXT_STANDARD_SLOT';
-    if(followOn && result.status!=='API_BUDGET_WAIT') {
+    // Inside the slot chain the same workflow runs again until its sweep is done (operator rule 2026-11-23).
+    result.continuation=options.inSlotChain===true && result.status!=='API_BUDGET_WAIT' ?
+      'SLOT_CHAIN_NEXT_PASS' : 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+    if(followOn && options.inSlotChain!==true && result.status!=='API_BUDGET_WAIT') {
       try { result.continuation=tmv3_verticalScheduleFollowOn_(vertical); }
       catch(err) { result.continuation='FOLLOW_ON_SCHEDULING_FAILED: '+String(err && err.message || err).slice(0,160); }
     }

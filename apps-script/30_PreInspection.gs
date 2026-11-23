@@ -2768,26 +2768,33 @@ function tmv3_preInspectionMaybeContinueSweep_(result) {
 
 /** One slot = one run: read-only Calendar review, batches until done or the time limit, then publish views.
  * No follow-on runs; anything left continues at the next slot. */
-function tmv3_runPreInspectionDailySlot_(slot) {
+function tmv3_runPreInspectionDailySlot_(slot, options) {
+  options = options || {};
   const gate = tmv3_piStagingDisabled_(); if (gate) return gate;
   tmv3_piAssertLockedStandard_();
   const sheetRefreshStarted = Date.now();
+  // A slot-chain continuation pass only finishes this slot's sweep: the Calendar review and
+  // off-shared notices already ran in pass 1 of the same slot.
+  const continuationPass = options.continuationPass === true;
   // Report-only Calendar review; failure keeps the last-good view and never blocks Striven work.
   let calendarReview = null;
-  try { calendarReview = tmv3_piCalendarReviewRefresh_(); }
+  if (continuationPass) calendarReview = {status:'PI_REVIEW_DONE_IN_FIRST_PASS'};
+  else try { calendarReview = tmv3_piCalendarReviewRefresh_(); }
   catch (err) {
     calendarReview = {status:'PI_REVIEW_ATTENTION',error:String(err && err.message || err).slice(0, 400)};
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
   const deadline = sheetRefreshStarted + 180000;
-  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
+  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:!continuationPass,sweepContinue:continuationPass,
+    deadline:deadline,reason:'DAILY_SLOT_' + slot + (continuationPass ? '_PASS_' + options.pass : '')});
   // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
   // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of
   // giving the whole slot up; the batch time limit below still ends the slot well inside 6 minutes.
   const lockRetries = [];
   while (result.status === 'LOCK_BUSY' && Date.now() - sheetRefreshStarted < 150000) {
     lockRetries.push(new Date().toISOString());
-    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
+    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:!continuationPass,sweepContinue:continuationPass,
+      deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
   }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),
     notifications:Number(result.notifications || 0),results:(result.results || []).slice()};
@@ -2809,12 +2816,15 @@ function tmv3_runPreInspectionDailySlot_(slot) {
   result.notifications = totals.notifications; result.results = totals.results;
   if (result.status === 'LOCK_BUSY' && TMV3_PI_EPHEMERAL_STATE_IN_CACHE !== true) PropertiesService.getScriptProperties().setProperty('TMV3_PI_RETRY_SWEEP_START', '1');
   tmv3_preInspectionMaybeContinueSweep_(result);
+  // Inside the slot chain the next pass of this slot finishes the sweep (operator rule 2026-11-23).
+  if (options.inSlotChain === true && /^DEFERRED_TO_NEXT_STANDARD_SLOT/.test(String(result.continuation || '')))
+    result.continuation = 'SLOT_CHAIN_NEXT_PASS';
   if (result.sweep && result.sweep.remaining > 0 && result.status === 'COMPLETE') result.status = 'IN_PROGRESS';
   if (result.sweep && result.sweep.remaining === 0 && result.sweep.pendingReview > 0 && result.status === 'COMPLETE')
     result.status = 'ATTENTION_PENDING_REVIEW';
   if (calendarReview && calendarReview.status === 'PI_REVIEW_PARTIAL_SOURCE_ACCESS' && result.status === 'COMPLETE')
     result.status = 'ATTENTION_CALENDAR_COVERAGE';
-  if (TMV3_PI_OFF_SHARED_NOTICES_ENABLED === true) {
+  if (TMV3_PI_OFF_SHARED_NOTICES_ENABLED === true && !continuationPass) {
     try { result.offShared = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12}); }
     catch (err) { result.offShared = {status:'ATTENTION',error:String(err && err.message || err).slice(0, 300)}; }
     result.notifications += Number(result.offShared && result.offShared.notified || 0);
@@ -2829,9 +2839,9 @@ function tmv3_runPreInspectionDailySlot_(slot) {
   if (result.status === 'COMPLETE' && (!result.operatorQueue || result.operatorQueue.status !== 'PI_OPERATOR_VIEW_REFRESHED'))
     result.status = 'ATTENTION_OPERATOR_QUEUE';
   if (result.status === 'COMPLETE' && (!calendarReview ||
-      !/^(?:PI_REVIEW_REFRESHED|PI_REVIEW_UNCHANGED)$/.test(String(calendarReview.status || ''))))
+      !/^(?:PI_REVIEW_REFRESHED|PI_REVIEW_UNCHANGED|PI_REVIEW_DONE_IN_FIRST_PASS)$/.test(String(calendarReview.status || ''))))
     result.status = 'ATTENTION_CALENDAR_COVERAGE';
-  tmv3_preInspectionLogSweep_(slot, result); // audit only after both publication outcomes are known
+  tmv3_preInspectionLogSweep_(continuationPass ? slot + ' pass ' + options.pass : slot, result); // audit only after both publication outcomes are known
   return result;
 }
 

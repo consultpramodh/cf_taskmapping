@@ -71,17 +71,19 @@ function tmv3_standardDailySchedule_() {
 }
 
 // Original: 60_Automation; Function: tmv3_standardVerticalSlot_
-function tmv3_standardVerticalSlot_(vertical,slot) {
-  const result=tmv3_runFullVerticalSweep_(vertical);
-  if(vertical==='Install') {
+function tmv3_standardVerticalSlot_(vertical,slot,options) {
+  options=options||{};
+  const result=tmv3_runFullVerticalSweep_(vertical,options);
+  // Reminders run once per slot (first pass); continuation passes only finish the sweep.
+  if(vertical==='Install' && options.continuationPass!==true) {
     result.reminders=tmv3_installReminderCheck();
   }
-  tmv3_audit_(vertical,'','','STANDARD_DAILY_SLOT',result.status,tmv3_verticalRunSummary_(slot,result));
+  tmv3_audit_(vertical,'','','STANDARD_DAILY_SLOT',result.status,tmv3_verticalRunSummary_(slot,result,options.pass));
   return result;
 }
 
 /** One TM Audit row per run: counts by outcome, plus only the installs that changed or need attention. */
-function tmv3_verticalRunSummary_(slot,result) {
+function tmv3_verticalRunSummary_(slot,result,pass) {
   const counts={},items=[];
   (result.results||[]).forEach(function(r){
     counts[r.status]=(counts[r.status]||0)+1;
@@ -90,8 +92,8 @@ function tmv3_verticalRunSummary_(slot,result) {
     items.push({eventId:r.eventId,status:r.status,error:String(r.error||'').slice(0,160)||undefined,
       changes:r.executions?r.executions.map(function(e){return (e.actions||[]).filter(function(a){return a!=='VERIFY_CALENDAR_LINKS';}).join('+');}).join(','):undefined});
   });
-  const out={slot:slot,status:result.status,checked:Number(result.scanned||0),writes:Number(result.writes||0),
-    pending:Number(result.pending||0),counts:counts,items:items,reminders:result.reminders};
+  const out={slot:slot,pass:Number(pass||1),status:result.status,checked:Number(result.scanned||0),writes:Number(result.writes||0),
+    pending:Number(result.pending||0),continuation:result.continuation||undefined,counts:counts,items:items,reminders:result.reminders};
   let text=JSON.stringify(out);
   // A Sheets cell holds 50,000 characters.
   while(text.length>45000 && out.items.length){out.items.length=Math.floor(out.items.length/2);out.itemsTruncated=true;text=JSON.stringify(out);}
@@ -150,6 +152,11 @@ const TMV3_SLOT_CHAIN_NEXT_HANDLER = 'tmv3_slotChainNext';
 const TMV3_SLOT_CHAIN_GAP_MS = 60000;
 // A step still marked RUNNING after this long was killed by the Apps Script time limit: move on.
 const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 35 * 60000;
+// Operator rule 2026-11-23: a slot resolves every event that needs it at that slot; nothing is left for
+// the next slot. A workflow whose sweep still has events after one run is run again (its sweep resumes
+// from its cursor), each pass in its own execution, before the chain moves to the next workflow.
+// The cap only stops a sweep that never finishes; hitting it is reported as SLOT_CHAIN/PASS_LIMIT.
+const TMV3_SLOT_CHAIN_MAX_PASSES = 20;
 
 /** Trigger handlers installed by tmv3_installStandardDailyTriggers (one per slot). */
 function tmv3_standardSlot0800() { return tmv3_slotChainStart_('08:00'); }
@@ -194,10 +201,33 @@ function tmv3_slotChainSchedule_(delayMs) {
   ScriptApp.newTrigger(TMV3_SLOT_CHAIN_NEXT_HANDLER).timeBased().after(Math.max(60000, delayMs)).create();
 }
 
-/** Runs one workflow's standard slot exactly as its own trigger used to. */
-function tmv3_slotChainRunVertical_(vertical, slot) {
-  if (vertical === 'PreInspection') return tmv3_runPreInspectionDailySlot_(slot);
-  return tmv3_standardVerticalSlot_(vertical, slot);
+/** Runs one pass of one workflow's standard slot. Pass 1 is the full slot run; later passes only
+ * continue the sweep (no second Calendar review, off-shared notices or Install reminders). */
+function tmv3_slotChainRunVertical_(vertical, slot, pass) {
+  const options = {inSlotChain:true, pass:pass || 1, continuationPass:(pass || 1) > 1};
+  if (vertical === 'PreInspection') return tmv3_runPreInspectionDailySlot_(slot, options);
+  return tmv3_standardVerticalSlot_(vertical, slot, options);
+}
+
+/** Events this workflow's sweep still has to look at after a pass; 0 when its sweep is finished. */
+function tmv3_slotChainRemaining_(vertical, result) {
+  result = result || {};
+  if (vertical === 'PreInspection') return Number(result.sweep && result.sweep.remaining || 0);
+  return Number(result.pending || 0);
+}
+
+/** Whether the chain must run this workflow again before moving on, and why not when it must not. */
+function tmv3_slotChainNeedsAnotherPass_(vertical, result, pass) {
+  result = result || {};
+  const status = String(result.status || '');
+  const remaining = tmv3_slotChainRemaining_(vertical, result);
+  if (status === 'API_BUDGET_WAIT') return {again:false, reason:'API_BUDGET_WAIT', remaining:remaining};
+  if (status !== 'LOCK_BUSY' && remaining <= 0) return {again:false, reason:'SWEEP_DONE', remaining:0};
+  const progressed = Number(vertical === 'PreInspection' ? result.processed : result.scanned) > 0;
+  // No progress without a lock reason: the sweep is stuck on something another pass will not fix.
+  if (status !== 'LOCK_BUSY' && !progressed) return {again:false, reason:'NO_PROGRESS', remaining:remaining};
+  if (pass >= TMV3_SLOT_CHAIN_MAX_PASSES) return {again:false, reason:'PASS_LIMIT', remaining:remaining};
+  return {again:true, reason:status === 'LOCK_BUSY' ? 'LOCK_BUSY' : 'EVENTS_REMAINING', remaining:remaining};
 }
 
 /** Slot trigger: start a new ordered run with the first workflow (PreInspection). */
@@ -210,7 +240,7 @@ function tmv3_slotChainStart_(slot) {
       skipped:prior.order.slice(prior.index), current:prior.step || null}));
   }
   const state = {slot:slot, day:Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd'),
-    order:tmv3_standardDailySchedule_().verticals.slice(), index:0, status:'RUNNING',
+    order:tmv3_standardDailySchedule_().verticals.slice(), index:0, pass:0, status:'RUNNING',
     startedAt:new Date().toISOString(), steps:[]};
   tmv3_slotChainWrite_(state);
   return tmv3_slotChainRunCurrent_(state);
@@ -229,8 +259,10 @@ function tmv3_slotChainNext() {
       return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical};
     }
     step.status = 'TIMED_OUT'; step.finishedAt = new Date().toISOString();
-    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'STEP_TIMED_OUT', JSON.stringify({slot:state.slot, vertical:step.vertical, startedAt:step.startedAt}));
-    state.steps.push(step); state.step = null; state.index++;
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'STEP_TIMED_OUT', JSON.stringify({slot:state.slot, vertical:step.vertical, pass:step.pass || 1, startedAt:step.startedAt}));
+    state.steps.push(step); state.step = null;
+    // The killed pass saved its sweep cursor batch by batch: run the same workflow again; move on only at the cap.
+    if (Number(state.pass || 0) >= TMV3_SLOT_CHAIN_MAX_PASSES) { state.index++; state.pass = 0; }
     tmv3_slotChainWrite_(state);
   }
   return tmv3_slotChainRunCurrent_(state);
@@ -244,12 +276,14 @@ function tmv3_slotChainRunCurrent_(state) {
     return {status:'SLOT_CHAIN_COMPLETE', slot:state.slot, steps:state.steps};
   }
   const vertical = state.order[state.index];
-  state.step = {vertical:vertical, status:'RUNNING', startedAt:new Date().toISOString()};
+  const pass = Number(state.pass || 0) + 1;
+  state.pass = pass;
+  state.step = {vertical:vertical, pass:pass, status:'RUNNING', startedAt:new Date().toISOString()};
   tmv3_slotChainWrite_(state);
   // Safety net first: if this execution is killed by the time limit, the one-off trigger moves the chain on.
   tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS);
   let result;
-  try { result = tmv3_slotChainRunVertical_(vertical, state.slot) || {}; }
+  try { result = tmv3_slotChainRunVertical_(vertical, state.slot, pass) || {}; }
   catch (err) {
     result = {status:'ATTENTION', error:String(err && err.message || err).slice(0, 300)};
     try { tmv3_audit_(vertical, '', '', 'STANDARD_DAILY_SLOT', 'ATTENTION', JSON.stringify({slot:state.slot, error:result.error})); } catch (ignored) {}
@@ -257,9 +291,23 @@ function tmv3_slotChainRunCurrent_(state) {
   // A newer slot may have taken over while this step ran; never overwrite its state.
   const latest = tmv3_slotChainRead_();
   if (!latest || latest.startedAt !== state.startedAt) return {status:'SLOT_CHAIN_SUPERSEDED', vertical:vertical, result:result};
-  state.step.status = 'DONE'; state.step.result = String(result.status || 'UNKNOWN');
+  const next = tmv3_slotChainNeedsAnotherPass_(vertical, result, pass);
+  state.step.result = String(result.status || 'UNKNOWN');
+  state.step.remaining = next.remaining;
   state.step.finishedAt = new Date().toISOString();
-  state.steps.push(state.step); state.step = null; state.index++;
+  if (next.again) {
+    // Same workflow again in its own execution: its sweep resumes where this pass stopped.
+    state.step.status = 'CONTINUE';
+    state.steps.push(state.step); state.step = null;
+    tmv3_slotChainWrite_(state);
+    tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_GAP_MS);
+    return {status:'SLOT_CHAIN_SAME_WORKFLOW_NEXT_PASS', vertical:vertical, pass:pass, remaining:next.remaining, result:result};
+  }
+  state.step.status = next.reason === 'SWEEP_DONE' ? 'DONE' : 'UNRESOLVED_' + next.reason;
+  if (next.reason !== 'SWEEP_DONE')
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', next.reason, JSON.stringify({slot:state.slot, vertical:vertical,
+      pass:pass, remaining:next.remaining, status:result.status || ''}));
+  state.steps.push(state.step); state.step = null; state.index++; state.pass = 0;
   tmv3_slotChainWrite_(state);
   if (state.index >= state.order.length) return tmv3_slotChainRunCurrent_(state);
   tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_GAP_MS);
