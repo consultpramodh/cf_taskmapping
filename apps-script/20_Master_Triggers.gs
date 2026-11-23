@@ -287,9 +287,22 @@ function tmv3_slotChainNext() {
   const step = state.step;
   if (step && step.status === 'RUNNING') {
     const startedMs = new Date(step.startedAt).getTime(), age = Date.now() - startedMs;
+    // Exact liveness: the running pass holds the document lock, which Apps Script releases when that
+    // execution ends for any reason (finished, failed or killed). Busy = alive, whatever its age or
+    // audit activity (2026-11-23 13:19: a live PreInspection pass doing a 10+ minute inline source
+    // refresh was declared dead and a second copy ran alongside it).
+    const liveness = tmv3_slotChainLivenessLock_();
+    if (liveness) {
+      if (!liveness.tryLock(1000)) {
+        tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_RECHECK_MS);
+        return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical, ageMinutes:Math.round(age / 60000), liveness:'LOCK_HELD'};
+      }
+      liveness.releaseLock();
+    }
     const lastActivity = Math.max(startedMs, Number(PropertiesService.getScriptProperties().getProperty('TMV3_LAST_AUDIT_AT') || 0));
     const idle = Date.now() - lastActivity;
-    const dead = age >= TMV3_SLOT_CHAIN_STEP_HARD_TIMEOUT_MS ||
+    // With the liveness lock free the pass has ended; the age/idle rule only applies without that lock.
+    const dead = !!liveness || age >= TMV3_SLOT_CHAIN_STEP_HARD_TIMEOUT_MS ||
       (age >= TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS && idle >= TMV3_SLOT_CHAIN_STEP_IDLE_MS);
     if (!dead) {
       // Still working (recent audit activity): look again shortly instead of starting a second copy.
@@ -314,6 +327,22 @@ function tmv3_slotChainRunCurrent_(state) {
     return {status:'SLOT_CHAIN_COMPLETE', slot:state.slot, steps:state.steps};
   }
   const vertical = state.order[state.index];
+  // Never run two passes at once: a pass from an earlier (abandoned) chain may still be running.
+  const liveness = tmv3_slotChainLivenessLock_();
+  if (liveness && !liveness.tryLock(5000)) {
+    tmv3_slotChainSchedule_(2 * 60000);
+    return {status:'SLOT_CHAIN_WAITING_FOR_RUNNING_PASS', vertical:vertical};
+  }
+  try { return tmv3_slotChainRunPass_(state, vertical); }
+  finally { if (liveness) liveness.releaseLock(); }
+}
+
+/** The lock a running chain pass holds for its whole execution (null when not container-bound). */
+function tmv3_slotChainLivenessLock_() {
+  try { return LockService.getDocumentLock(); } catch (ignored) { return null; }
+}
+
+function tmv3_slotChainRunPass_(state, vertical) {
   const pass = Number(state.pass || 0) + 1;
   state.pass = pass;
   state.step = {vertical:vertical, pass:pass, status:'RUNNING', startedAt:new Date().toISOString()};

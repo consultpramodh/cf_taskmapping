@@ -119,4 +119,26 @@ const v = (scanned, pending, status) => ({status: status || (pending ? 'RUNTIME_
   assert.deepStrictEqual(h2.calls[0], 'PreInspection:4:cont');
 }
 
-console.log('slot_chain_until_done: all 6 checks passed');
+// 7. Document-lock liveness: a pass holding the lock is alive at any age; once released it is rerun.
+{
+  const h = harness({PreInspection: [pi(1, 0)], Install: [v(0, 0)], Delivery: [v(0, 0)], Service: [v(0, 0)]});
+  let held = true;
+  h.ctx.LockService.getDocumentLock = () => ({tryLock: () => !held, releaseLock: () => {}});
+  const now = Date.now();
+  h.props.TMV3_SLOT_CHAIN = JSON.stringify({slot:'13:00', day:'2026-11-23', order:['PreInspection','Install','Delivery','Service'],
+    index:0, pass:1, status:'RUNNING', startedAt:new Date(now - 20 * 60000).toISOString(), steps:[],
+    step:{vertical:'PreInspection', pass:1, status:'RUNNING', startedAt:new Date(now - 20 * 60000).toISOString()}});
+  h.props.TMV3_LAST_AUDIT_AT = String(now - 15 * 60000); // idle 15 min: the old rule would call it dead
+  assert.strictEqual(h.ctx.tmv3_slotChainNext().status, 'SLOT_CHAIN_STEP_STILL_RUNNING');
+  assert.strictEqual(h.calls.length, 0);
+  held = false; // the execution ended (or was killed): lock released
+  h.ctx.tmv3_slotChainNext();
+  assert.strictEqual(h.calls[0], 'PreInspection:2:cont');
+  // A new chain never starts a pass while an earlier pass still holds the lock.
+  const h2 = harness({PreInspection: [pi(1, 0)], Install: [v(0, 0)], Delivery: [v(0, 0)], Service: [v(0, 0)]});
+  h2.ctx.LockService.getDocumentLock = () => ({tryLock: () => false, releaseLock: () => {}});
+  assert.strictEqual(h2.ctx.tmv3_slotChainStart_('13:00').status, 'SLOT_CHAIN_WAITING_FOR_RUNNING_PASS');
+  assert.strictEqual(h2.calls.length, 0);
+}
+
+console.log('slot_chain_until_done: all 7 checks passed');
