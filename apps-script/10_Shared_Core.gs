@@ -20297,17 +20297,37 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     const props=PropertiesService.getScriptProperties(),now=Date.now();
     const stateKey='TMV3_VERTICAL_SWEEP_'+vertical+(weekScope ? '_RANGE_'+weekScope.fromDay+'_'+weekScope.toDay : '')+(targetIds?'_TARGET_'+tmv3_hash_(targetIds.slice().sort().join('|')):'');
     let state=JSON.parse(props.getProperty(stateKey)||'null');
+    // A sweep's event list is a snapshot taken when it started. One older than a day misses every event
+    // booked since (Service ran a 2026-11-09 snapshot until 2026-11-23): start a fresh sweep instead.
+    if(state && !state.complete && !weekScope && !targetIds && now-Number(state.id||0)>TMV3_VERTICAL_SWEEP_MAX_AGE_MS) {
+      tmv3_audit_(vertical,'','','VERTICAL_SWEEP','EXPIRED_RESTARTED',JSON.stringify({sweepId:state.id,cursor:state.cursor,total:state.total}));
+      state=null;
+    }
     if(!state || state.complete) {
-      if(vertical==='Install') {
+      if(['Install','Delivery','Service'].indexOf(vertical)>=0 && !weekScope && !targetIds) {
         const budget=tmv3_strivenApiBudgetStatus_();
         if(budget.exhausted || budget.remaining<Number(policy.verticalProductionMinApiRemaining||60))return Object.assign(result,{status:'API_BUDGET_WAIT'});
         result.sources=tmv3_slotSourceRefresh_();
-        result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
+        // Every new sweep works from the live Calendars: rebuild this workflow's tab first (no Striven or
+        // Calendar writes). Delivery and Service used to sweep a stale tab and found no new events.
+        try {
+          result.intake=vertical==='Install' ? tmv3_installRefreshView_('INSTALL_SWEEP_START') :
+            vertical==='Delivery' ? tmv3_deliveryRefreshView_('DELIVERY_SWEEP_START') :
+            tmv3_verticalRefreshView_(vertical,'SERVICE_SWEEP_START');
+        } catch(err) {
+          const message=String(err && err.message || err);
+          tmv3_audit_(vertical,'','','VERTICAL_INTAKE_REFRESH','ATTENTION',message);
+          throw Error('VERTICAL_INTAKE_REFRESH_FAILED_NO_SWEEP:'+vertical+': '+message.slice(0,200));
+        }
       }
       // Consume the existing intake queue; each event is freshly verified below.
       // Rebuilding every operator sheet here can consume the entire execution.
       const today=tmv3_step6LocalDay_(new Date()),seen={};
-      const events=tmv3_rows_(TMV3.VERTICALS[vertical].sheet).filter(function(row){
+      const tabRows=tmv3_rows_(TMV3.VERTICALS[vertical].sheet);
+      // A tab in another layout has no 'Calendar Start': every row would be skipped and the sweep would
+      // silently find nothing (Delivery 2026-11-23). Stop and report instead.
+      if(tabRows.length && !('Calendar Start' in tabRows[0]))throw Error('VERTICAL_TAB_LAYOUT_NOT_STEP1_NO_SWEEP:'+vertical);
+      const events=tabRows.filter(function(row){
         const id=tmv3_clean_(row['Event ID']),day=tmv3_step6LocalDay_(row['Calendar Start']);
         if(!id||seen[id]||targetIds && targetIds.indexOf(id)<0||!day||day<(weekScope ? weekScope.fromDay : today)||weekScope && day>=weekScope.toDay)return false;seen[id]=true;return true;
       }).sort(function(a,b){return new Date(a['Calendar Start'])-new Date(b['Calendar Start']);});
@@ -20540,6 +20560,37 @@ function tmv3_automationSheetRefreshStatus() {
 var TMV3_VERTICAL_FOLLOW_ON = {};
 // One slot run may spend this long on the sweep, leaving time for Install notices inside the 6-minute limit.
 const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
+// An unfinished sweep older than this is restarted from the live Calendars (see tmv3_verticalProductionCycle_).
+const TMV3_VERTICAL_SWEEP_MAX_AGE_MS = 24 * 3600000;
+
+/** Rebuild one workflow's tab from its live Calendars through the Step 2-6 decision pipeline, in the
+ * layout the sweep reads (TMV3_STEP1_HEADERS). Read-only for Striven and Calendar. Used for Service;
+ * Install and Delivery keep their own equivalents (tmv3_installRefreshView_, tmv3_deliveryRefreshView_). */
+function tmv3_verticalRefreshView_(vertical, reason) {
+  const cfg=TMV3.VERTICALS[vertical],start=new Date(),end=new Date();
+  if(!cfg)throw Error('UNKNOWN_VERTICAL:'+vertical);
+  start.setDate(start.getDate()-Number(cfg.lookbackDays||0));start.setHours(0,0,0,0);
+  end.setDate(end.getDate()+Number(cfg.lookaheadDays||365));end.setHours(23,59,59,999);
+  const input=[];
+  tmv3_verticalCalendars_(vertical,cfg).forEach(function(calCfg){
+    const calendar=CalendarApp.getCalendarById(calCfg.calendarId);
+    if(!calendar)throw Error(vertical.toUpperCase()+'_CALENDAR_UNAVAILABLE:'+(calCfg.technician||calCfg.calendarName||calCfg.calendarId));
+    const resolved=Object.assign({},calCfg,{calendarName:calendar.getName()});
+    calendar.getEvents(start,end).forEach(function(event){const record=tmv3_calendarEvent_(vertical,cfg,resolved,event,{applyEligibility:false});if(record)input.push(record);});
+  });
+  const records=tmv3_mergeLogicalCalendarRecords_(input);
+  const stage2=tmv3_step2CalendarRecords_(records);
+  const stage3=tmv3_step3BusinessAnchorRecords_(stage2,tmv3_step3AnchorIndex_());
+  const stage4=tmv3_step4IdentityRecords_(stage3,tmv3_step4IdentityIndex_());
+  const stage5=tmv3_step5TaskRecords_(stage4,tmv3_step5TaskIndex_());
+  const decisions=tmv3_step6DecisionRecords_(stage5).sort(function(a,b){return new Date(a.start)-new Date(b.start);});
+  const prior=tmv3_sheet_(cfg.sheet).getLastRow();
+  tmv3_replaceRows_(cfg.sheet,TMV3_STEP1_HEADERS.slice(),decisions.map(tmv3_step6OperatorRow_));
+  tmv3_step1FormatOperatorView_(cfg.sheet,vertical,decisions,prior);
+  const count=tmv3_rows_(cfg.sheet).filter(function(r){return !!tmv3_clean_(r['Event ID']);}).length;
+  if(count!==decisions.length)throw Error(vertical.toUpperCase()+'_VIEW_ROW_READBACK_FAILED');
+  return {status:vertical.toUpperCase()+'_VIEW_REFRESHED',at:new Date().toISOString(),reason:reason,rows:count,strivenWrites:0,calendarWrites:0};
+}
 
 function tmv3_runFullVerticalSweep_(vertical, options) {
   options = options || {};

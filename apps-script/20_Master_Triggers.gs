@@ -111,9 +111,13 @@ function tmv3_sourceRefreshSlot() {
   const started = Date.now(), props = PropertiesService.getScriptProperties();
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(120000)) {
-    tmv3_audit_('SYSTEM','','','SOURCE_REFRESH','LOCK_BUSY','');
-    return {status:'LOCK_BUSY'};
+    // A long slot chain holds the lock (2026-11-23 11:03): try again in 5 minutes instead of skipping
+    // the refresh, which would leave the next slot on old Striven data or refreshing inline.
+    const retry = tmv3_sourceRefreshScheduleRetry_();
+    tmv3_audit_('SYSTEM','','','SOURCE_REFRESH','LOCK_BUSY',JSON.stringify({retry:retry}));
+    return {status:'LOCK_BUSY',retry:retry};
   }
+  tmv3_sourceRefreshClearRetry_();
   let result;
   try {
     // Recorded before the refresh, so a timed-out refresh still keeps the slots from retrying it inline.
@@ -126,6 +130,30 @@ function tmv3_sourceRefreshSlot() {
   result.seconds = Math.round((Date.now() - started) / 1000);
   tmv3_audit_('SYSTEM','','','SOURCE_REFRESH',result.status,JSON.stringify(result));
   return result;
+}
+
+const TMV3_SOURCE_REFRESH_RETRY_HANDLER = 'tmv3_sourceRefreshRetry';
+const TMV3_SOURCE_REFRESH_MAX_RETRIES = 18; // 5-minute retries: up to 90 minutes after the scheduled time
+
+/** One-off trigger handler: the scheduled source refresh found the lock busy. */
+function tmv3_sourceRefreshRetry() { return tmv3_sourceRefreshSlot(); }
+
+function tmv3_sourceRefreshClearRetry_() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === TMV3_SOURCE_REFRESH_RETRY_HANDLER) ScriptApp.deleteTrigger(t);
+  });
+}
+
+function tmv3_sourceRefreshScheduleRetry_() {
+  const props = PropertiesService.getScriptProperties();
+  const window = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd') + '_' +
+    TMV3_SOURCE_REFRESH_HOURS.filter(function(h) { return h <= Number(Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'H')); }).slice(-1)[0];
+  const key = 'TMV3_SOURCE_REFRESH_RETRIES_' + window, count = Number(props.getProperty(key) || 0);
+  if (count >= TMV3_SOURCE_REFRESH_MAX_RETRIES) return 'RETRY_LIMIT_REACHED';
+  tmv3_sourceRefreshClearRetry_();
+  ScriptApp.newTrigger(TMV3_SOURCE_REFRESH_RETRY_HANDLER).timeBased().after(5 * 60000).create();
+  props.setProperty(key, String(count + 1));
+  return 'RETRY_IN_5_MINUTES_' + (count + 1);
 }
 
 /** Used by the business slots instead of refreshing inline. Falls back to the inline refresh only when

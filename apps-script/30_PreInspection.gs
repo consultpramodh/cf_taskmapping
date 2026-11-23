@@ -2351,7 +2351,8 @@ function tmv3_piCycleBody_(cycle) {
   }
 
   // Stage E: slots evaluate deadlines for all authoritative events; continuations do not rescan mail.
-  const notificationRecords = options.sweepContinue === true ? [] : (scopeEventId ? selected : records);
+  const notificationRecords = options.sweepContinue === true || options.skipNotificationScan === true ? [] :
+    (scopeEventId ? selected : records);
   notificationRecords.filter(function(r) {
     return r.calendarRole === 'PRIMARY_SHARED' && !tmv3_preInspectionApprovalHold_(r.eventId);
   }).forEach(function(r) {
@@ -2822,7 +2823,10 @@ function tmv3_runPreInspectionDailySlot_(slot, options) {
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
   const deadline = sheetRefreshStarted + 180000;
-  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:!continuationPass,sweepContinue:continuationPass,
+  // sweepStart resumes the slot's unfinished sweep, or starts one when pass 1 never got the lock
+  // (2026-11-23 11:03: pass 1 LOCK_BUSY, pass 2 found no sweep and the slot checked nothing).
+  // Continuation passes skip the missing-details notice scan that pass 1 already ran.
+  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,skipNotificationScan:continuationPass,
     deadline:deadline,reason:'DAILY_SLOT_' + slot + (continuationPass ? '_PASS_' + options.pass : '')});
   // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
   // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of
@@ -2830,7 +2834,7 @@ function tmv3_runPreInspectionDailySlot_(slot, options) {
   const lockRetries = [];
   while (result.status === 'LOCK_BUSY' && Date.now() - sheetRefreshStarted < 150000) {
     lockRetries.push(new Date().toISOString());
-    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:!continuationPass,sweepContinue:continuationPass,
+    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,skipNotificationScan:continuationPass,
       deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
   }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),
