@@ -8,3 +8,4 @@
 - 2026-11-23: Automated Calendar changes never notify attendees ("Don't send"). CalendarApp setters only (no guest updates sent); any Calendar API write passes sendUpdates=none; no guest add/remove. Enforced by tests/calendar_no_notifications.test.js.
 - 2026-11-23: Delivery and Service sweeps start from their live Calendars (tab rebuilt at sweep start, like Install); a tab in another layout stops the sweep with an error instead of finding nothing; an unfinished sweep older than 24 hours restarts. A busy lock no longer skips the scheduled Striven source refresh (5-minute retries).
 - 2026-11-23: RECREATE with several completed source Tasks copies the most recent one (latest Due, then Start, then Task ID). Errors proven to occur before any Striven write are review items, not uncertain-write holds.
+- 2026-11-23: A new Striven Location is created only from a street address (civic number + street). Intersections, landmarks or bare street names stay unresolved for review.

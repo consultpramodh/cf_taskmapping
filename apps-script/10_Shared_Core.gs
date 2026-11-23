@@ -6870,6 +6870,21 @@ function tmv3_step4ResolveLocation_(record, refs, customer, preferredLocationId)
 
   // Historical rule: once Customer identity is proven, a genuinely different
   // Calendar job-site address may be added to that Customer later.
+  // A new Striven Location needs a real street address (number + street). Intersections, landmarks or
+  // bare street names ("Highway 35 S / Highway 115 South", Ahmed Kayka 2026-11-23) stay unresolved
+  // so nobody gets a Location that cannot be visited or matched later.
+  if (
+    owned.errorCode === 'LOCATION_UNRESOLVED' &&
+    tmv3_clean_(record.location) &&
+    !tmv3_isStreetAddress_(record.location)
+  ) {
+    return Object.assign({}, owned, {
+      reason: 'Calendar location is not a street address (needs a street number); add the job-site address to the Calendar event.',
+      proposedAddress: tmv3_clean_(record.location),
+      evidence: fallbackEvidence.concat(['LOCATION_ADDRESS_NOT_STREET_ADDRESS'])
+    });
+  }
+
   if (
     owned.errorCode === 'LOCATION_UNRESOLVED' &&
     tmv3_clean_(record.location)
@@ -20590,6 +20605,14 @@ const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
  *    held plan has no CREATE_LOCATION.
  * Location ownership failures are NOT included: they can follow tmv3_ensureStep7Location_, which may
  * already have created a Location (Klement 2026-11-14, Location 58743). */
+/** True when the text starts with a civic number followed by a street name ("4722 Old Simcoe St",
+ * "1360 Glenanna Rd, Unit 9A"); false for intersections, landmarks and street names alone. */
+function tmv3_isStreetAddress_(value) {
+  const text = tmv3_clean_(value);
+  if (!text || /\s\/\s|\s&\s|\bat\b|\bcorner of\b/i.test(text.split(',')[0])) return false;
+  return /^(?:unit\s*\w+\s*[-,]?\s*)?\d{1,6}[a-z]?\s+\S+/i.test(text);
+}
+
 function tmv3_verticalPrewriteRejection_(message, plan) {
   const text=String(message||'');
   if(/^RECREATE requires exactly one completed source Task; found \d+\.$/.test(text) && !/LOCATION/i.test(String(plan||'')))return true;
