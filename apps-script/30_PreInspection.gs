@@ -40,6 +40,11 @@ var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
 // processed in the same slot. Unproven ones keep the email to the booker. Stephen's own bookings,
 // service calls, installs and meetings are never touched (tmv3_piRepBookedIntent_).
 var TMV3_PI_AUTO_SHARE_PROVEN = true;
+// Operator 2026-11-23: incomplete events are candidates too. A rep-booked pre-inspection whose Striven
+// Customer is not proven yet (not in Striven, no Customer #, no street address) is also shared, so it
+// is tracked on CF Preinspects, processed as far as its data allows and its booker is asked for what
+// is missing. Same intent exclusions as above.
+var TMV3_PI_AUTO_SHARE_UNPROVEN = true;
 // "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
 // question email is approved (send a TEST first with piTest_SendQuestionTest).
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
@@ -2610,7 +2615,10 @@ function tmv3_piAutoShareProvenOffShared_() {
   const headers = {Authorization:'Bearer ' + ScriptApp.getOAuthToken()};
   records.forEach(function(record) {
     const customer = tmv3_piAutoShareCustomerProof_(record, index);
-    if (!customer) { out.unproven.push({eventId:record.eventId, title:record.title}); return; }
+    if (!customer) {
+      out.unproven.push({eventId:record.eventId, title:record.title});
+      if (TMV3_PI_AUTO_SHARE_UNPROVEN !== true) return;
+    }
     const bare = String(record.eventId).replace(/@google\.com$/i, '');
     const url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(record.calendarId) + '/events/' + encodeURIComponent(bare);
     try {
@@ -2625,7 +2633,8 @@ function tmv3_piAutoShareProvenOffShared_() {
       const back = JSON.parse(res.getContentText());
       if (!(back.attendees || []).some(function(a) { return String(a.email) === primaryId; })) throw new Error('GUEST_READBACK_MISSING');
       out.shared++;
-      const one = {eventId:record.eventId, status:'SHARED_TO_CF_PREINSPECTS', customer:tmv3_clean_(customer['Customer Number'] || customer['Customer ID']), title:record.title};
+      const one = {eventId:record.eventId, status:customer ? 'SHARED_TO_CF_PREINSPECTS' : 'SHARED_INCOMPLETE',
+        customer:customer ? tmv3_clean_(customer['Customer Number'] || customer['Customer ID']) : '', title:record.title};
       out.events.push(one);
       tmv3_audit_('PreInspection', record.eventId, '', 'PI_AUTO_SHARE', 'PASS', JSON.stringify(Object.assign({sendUpdates:'none'}, one)));
     } catch (err) {

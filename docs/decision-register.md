@@ -10,3 +10,4 @@
 - 2026-11-23: RECREATE with several completed source Tasks copies the most recent one (latest Due, then Start, then Task ID). Errors proven to occur before any Striven write are review items, not uncertain-write holds.
 - 2026-11-23: A new Striven Location is created only from a street address (civic number + street). Intersections, landmarks or bare street names stay unresolved for review.
 - 2026-11-23: Rep-booked pre-inspections left only on Stephen's calendar are shared to CF Preinspects automatically (sendUpdates=none, guest list read back) when the Striven Customer is proven (Customer # with matching phone or surname, or a phone matching exactly one Customer), then processed in the same slot. Unproven ones keep the email to the booker.
+- 2026-11-23: Incomplete rep-booked pre-inspections (customer not proven) are shared to CF Preinspects too, tracked and processed as far as their data allows; the booker is asked for what is missing.
