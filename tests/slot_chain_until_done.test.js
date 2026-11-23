@@ -97,4 +97,26 @@ const v = (scanned, pending, status) => ({status: status || (pending ? 'RUNTIME_
   assert.deepStrictEqual(rows, [1, 2]);
 }
 
-console.log('slot_chain_until_done: all 5 checks passed');
+// 6. A pass still RUNNING with recent audit activity is left alone; with none for 10 minutes it is rerun.
+{
+  const h = harness({PreInspection: [pi(1, 0)], Install: [v(0, 0)], Delivery: [v(0, 0)], Service: [v(0, 0)]});
+  const now = Date.now();
+  const running = (startedMinAgo) => JSON.stringify({slot:'08:00', day:'2026-11-23', order:['PreInspection','Install','Delivery','Service'],
+    index:0, pass:3, status:'RUNNING', startedAt:new Date(now - 60 * 60000).toISOString(), steps:[],
+    step:{vertical:'PreInspection', pass:3, status:'RUNNING', startedAt:new Date(now - startedMinAgo * 60000).toISOString()}});
+  // 13 minutes old, audit row 2 minutes ago: still working.
+  h.props.TMV3_SLOT_CHAIN = running(13); h.props.TMV3_LAST_AUDIT_AT = String(now - 2 * 60000);
+  assert.strictEqual(h.ctx.tmv3_slotChainNext().status, 'SLOT_CHAIN_STEP_STILL_RUNNING');
+  assert.strictEqual(h.calls.length, 0);
+  // 13 minutes old, nothing for 11 minutes: dead, rerun the same workflow (pass 4).
+  h.props.TMV3_LAST_AUDIT_AT = String(now - 11 * 60000);
+  h.ctx.tmv3_slotChainNext();
+  assert.deepStrictEqual(h.calls[0], 'PreInspection:4:cont');
+  // 32 minutes old with activity: past the hard limit, treated as dead.
+  const h2 = harness({PreInspection: [pi(1, 0)], Install: [v(0, 0)], Delivery: [v(0, 0)], Service: [v(0, 0)]});
+  h2.props.TMV3_SLOT_CHAIN = running(32); h2.props.TMV3_LAST_AUDIT_AT = String(now - 60000);
+  h2.ctx.tmv3_slotChainNext();
+  assert.deepStrictEqual(h2.calls[0], 'PreInspection:4:cont');
+}
+
+console.log('slot_chain_until_done: all 6 checks passed');

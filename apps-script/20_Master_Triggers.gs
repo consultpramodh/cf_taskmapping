@@ -150,10 +150,14 @@ const TMV3_SLOT_CHAIN_KEY = 'TMV3_SLOT_CHAIN';
 const TMV3_SLOT_CHAIN_NEXT_HANDLER = 'tmv3_slotChainNext';
 // Gap between one workflow finishing and the next one starting.
 const TMV3_SLOT_CHAIN_GAP_MS = 60000;
-// A step still marked RUNNING after this long was killed by the time limit. Passes are built to end in
-// about 4-6 minutes, so 12 minutes means the pass died; the chain then reruns the same workflow
-// (was 35 minutes, which stalled the 2026-11-23 10:08 PreInspection pass for half an hour).
+// A pass still marked RUNNING is checked after 12 minutes. It is treated as dead (and the same workflow
+// is rerun) only when nothing has written a TM Audit row for 10 minutes, or after 31 minutes in any case
+// (past this project's 30-minute execution limit). One slow event can hold a pass ~11 minutes
+// (2026-11-23 10:09 pass 3), so age alone is not proof. Was a flat 35 minutes, which stalled chains.
 const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 12 * 60000;
+const TMV3_SLOT_CHAIN_STEP_IDLE_MS = 10 * 60000;
+const TMV3_SLOT_CHAIN_STEP_HARD_TIMEOUT_MS = 31 * 60000;
+const TMV3_SLOT_CHAIN_RECHECK_MS = 5 * 60000;
 // Operator rule 2026-11-23: a slot resolves every event that needs it at that slot; nothing is left for
 // the next slot. A workflow whose sweep still has events after one run is run again (its sweep resumes
 // from its cursor), each pass in its own execution, before the chain moves to the next workflow.
@@ -254,11 +258,15 @@ function tmv3_slotChainNext() {
   if (!state || state.status !== 'RUNNING') { tmv3_slotChainClearTriggers_(); return {status:'NO_ACTIVE_SLOT_CHAIN'}; }
   const step = state.step;
   if (step && step.status === 'RUNNING') {
-    const age = Date.now() - new Date(step.startedAt).getTime();
-    if (age < TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS) {
-      // Still inside its time limit (should not happen): check again when the limit has passed.
-      tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS - age + 60000);
-      return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical};
+    const startedMs = new Date(step.startedAt).getTime(), age = Date.now() - startedMs;
+    const lastActivity = Math.max(startedMs, Number(PropertiesService.getScriptProperties().getProperty('TMV3_LAST_AUDIT_AT') || 0));
+    const idle = Date.now() - lastActivity;
+    const dead = age >= TMV3_SLOT_CHAIN_STEP_HARD_TIMEOUT_MS ||
+      (age >= TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS && idle >= TMV3_SLOT_CHAIN_STEP_IDLE_MS);
+    if (!dead) {
+      // Still working (recent audit activity): look again shortly instead of starting a second copy.
+      tmv3_slotChainSchedule_(age < TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS ? TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS - age + 60000 : TMV3_SLOT_CHAIN_RECHECK_MS);
+      return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical, ageMinutes:Math.round(age / 60000), idleMinutes:Math.round(idle / 60000)};
     }
     step.status = 'TIMED_OUT'; step.finishedAt = new Date().toISOString();
     tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'STEP_TIMED_OUT', JSON.stringify({slot:state.slot, vertical:step.vertical, pass:step.pass || 1, startedAt:step.startedAt}));

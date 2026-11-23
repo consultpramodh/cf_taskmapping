@@ -224,6 +224,8 @@ function tmv3_audit_(vertical, eventId, taskId, action, result, detail) {
     TMV3.VERSION,
     TMV3.MODE
   ]);
+  // Activity heartbeat: the slot chain treats a pass with no audit activity as dead (20_Master_Triggers).
+  try { PropertiesService.getScriptProperties().setProperty('TMV3_LAST_AUDIT_AT', String(Date.now())); } catch (ignored) {}
 }
 
 function tmv3_stateKey_(vertical, eventId, taskId) {
