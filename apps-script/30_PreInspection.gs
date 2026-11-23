@@ -3381,6 +3381,38 @@ function tmv3_piCalendarReviewRefresh_() {
   } finally { lock.releaseLock(); }
 }
 
+/** Manual catch-up between slots (run from the editor): shares rep-booked pre-inspections still only on
+ * Stephen's calendar to CF Preinspects (notifications off), then resolves every CF Preinspects event from
+ * today on that has no Task link or is waiting for review. Logs one line per event with its Task or the
+ * exact blocker (missing street address, Customer not in Striven, several open Tasks...). */
+function tmv3_resolveIncompletePreInspections() {
+  const gate = tmv3_piStagingDisabled_(); if (gate) return gate;
+  let share;
+  try { share = tmv3_piAutoShareProvenOffShared_(); }
+  catch (err) { share = {status:'ATTENTION', error:String(err && err.message || err).slice(0, 300)}; }
+  Logger.log('AUTO-SHARE ' + JSON.stringify({status:share.status, candidates:share.candidates, shared:share.shared,
+    events:share.events, unproven:share.unproven, errors:share.errors, error:share.error}));
+  const pending = JSON.parse(PropertiesService.getScriptProperties().getProperty('TMV3_PI_PENDING_EVENTS') || '[]');
+  const targets = tmv3_preInspectionIntakeRecords_().filter(function(r) {
+    return !/TaskID=\d+/i.test(String(r.rawDescription || '')) || pending.indexOf(r.eventId) >= 0;
+  });
+  Logger.log('INCOMPLETE ' + targets.length + ': ' + targets.map(function(r) { return r.title; }).join(' | '));
+  const out = {share:share, events:[]};
+  targets.forEach(function(rec) {
+    const began = Date.now(); let r;
+    do {
+      r = tmv3_reconcilePreInspectionEvent(rec.eventId);
+      if (r.status !== 'LOCK_BUSY') break;
+      Utilities.sleep(20000); // a slot pass holds the lock
+    } while (Date.now() - began < 240000);
+    const one = {title:rec.title, status:r.status, writes:r.writes,
+      results:(r.results || []).map(function(x) { return {taskId:x.taskId, status:x.status || x.plan, blocker:x.blocker, error:x.error}; })};
+    out.events.push(one);
+    Logger.log('EVENT ' + JSON.stringify(one));
+  });
+  return out;
+}
+
 /** Manual entry point; writes only the review sheet. */
 function tmv3_preInspectionCalendarReviewRefresh() {
   return tmv3_piCalendarReviewRefresh_();
