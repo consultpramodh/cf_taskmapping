@@ -959,3 +959,22 @@ function piTest_WRITE_FixAudit120() {
     links:out.filter(function(r) { return r.kind === 'LINK'; }).length}));
   return out;
 }
+
+function tmp_oneTimeAllIncomplete() {
+  // 1. Share every rep-booked pre-inspection still only on Stephen's calendar (proven or incomplete), no notifications.
+  const share = tmv3_piAutoShareProvenOffShared_();
+  Logger.log('AUTO-SHARE ' + JSON.stringify({candidates:share.candidates, shared:share.shared, events:share.events, unproven:share.unproven, errors:share.errors}));
+  // 2. Every CF Preinspects event from today on with no task link, plus anything waiting for review.
+  const pending = JSON.parse(PropertiesService.getScriptProperties().getProperty('TMV3_PI_PENDING_EVENTS') || '[]');
+  const targets = tmv3_preInspectionIntakeRecords_().filter(function(r) {
+    return !/TaskID=\d+/i.test(String(r.rawDescription || '')) || pending.indexOf(r.eventId) >= 0;
+  });
+  Logger.log('INCOMPLETE ' + targets.length + ': ' + targets.map(function(r) { return r.title; }).join(' | '));
+  targets.forEach(function(rec) {
+    const began = Date.now(); let r;
+    do { r = tmv3_reconcilePreInspectionEvent(rec.eventId); if (r.status !== 'LOCK_BUSY') break; Utilities.sleep(20000); }
+    while (Date.now() - began < 240000);
+    Logger.log('EVENT ' + rec.title + ' → ' + JSON.stringify({status:r.status, writes:r.writes,
+      results:(r.results || []).map(function(x) { return {taskId:x.taskId, status:x.status || x.plan, blocker:x.blocker, error:x.error}; })}));
+  });
+}

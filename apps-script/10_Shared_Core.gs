@@ -224,6 +224,8 @@ function tmv3_audit_(vertical, eventId, taskId, action, result, detail) {
     TMV3.VERSION,
     TMV3.MODE
   ]);
+  // Activity heartbeat: the slot chain treats a pass with no audit activity as dead (20_Master_Triggers).
+  try { PropertiesService.getScriptProperties().setProperty('TMV3_LAST_AUDIT_AT', String(Date.now())); } catch (ignored) {}
 }
 
 function tmv3_stateKey_(vertical, eventId, taskId) {
@@ -6868,6 +6870,21 @@ function tmv3_step4ResolveLocation_(record, refs, customer, preferredLocationId)
 
   // Historical rule: once Customer identity is proven, a genuinely different
   // Calendar job-site address may be added to that Customer later.
+  // A new Striven Location needs a real street address (number + street). Intersections, landmarks or
+  // bare street names ("Highway 35 S / Highway 115 South", Ahmed Kayka 2026-11-23) stay unresolved
+  // so nobody gets a Location that cannot be visited or matched later.
+  if (
+    owned.errorCode === 'LOCATION_UNRESOLVED' &&
+    tmv3_clean_(record.location) &&
+    !tmv3_isStreetAddress_(record.location)
+  ) {
+    return Object.assign({}, owned, {
+      reason: 'Calendar location is not a street address (needs a street number); add the job-site address to the Calendar event.',
+      proposedAddress: tmv3_clean_(record.location),
+      evidence: fallbackEvidence.concat(['LOCATION_ADDRESS_NOT_STREET_ADDRESS'])
+    });
+  }
+
   if (
     owned.errorCode === 'LOCATION_UNRESOLVED' &&
     tmv3_clean_(record.location)
@@ -16038,6 +16055,10 @@ function tmv3_findRecreateSourceTask_(bundle) {
     }
   }
 
+  // Operator rule 2026-11-23: several completed Tasks (e.g. install + GO BACK, Kerry Warren SO580795)
+  // → copy the most recent one. Newest by Due, then Start, then the higher Task ID.
+  if (candidates.length > 1) candidates = [tmv3_mostRecentCompletedTask_(candidates)];
+
   if (candidates.length !== 1) {
     throw new Error(
       'RECREATE requires exactly one completed source Task; found ' +
@@ -16046,6 +16067,15 @@ function tmv3_findRecreateSourceTask_(bundle) {
   }
 
   return tmv3_replacementSourceSnapshot_(candidates[0]['Task ID']);
+}
+
+/** The most recent of several completed Tasks: latest Due, then latest Start, then highest Task ID. */
+function tmv3_mostRecentCompletedTask_(tasks) {
+  const when = function(value) { const t = new Date(value).getTime(); return isFinite(t) ? t : -Infinity; };
+  return tasks.slice().sort(function(a, b) {
+    return (when(b['Due']) - when(a['Due'])) || (when(b['Start']) - when(a['Start'])) ||
+      (Number(b['Task ID'] || 0) - Number(a['Task ID'] || 0));
+  })[0];
 }
 
 function tmv3_buildCreateSource_(bundle, action) {
@@ -16183,7 +16213,7 @@ function tmv3_missingLinksScan_() {
       if (!cal) { out.unreadable.push(v + ': ' + (calCfg.calendarName || calCfg.technician || calCfg.calendarId)); return; }
       cal.getEvents(from, to).forEach(function(ev) {
         if (ev.isAllDayEvent && ev.isAllDayEvent()) return;
-        if (ev.getEndTime().getTime() < now) return;
+        // Today's appointments stay listed after they end: an unresolved event today is still unresolved (operator 2026-11-23).
         const desc = String(ev.getDescription() || '');
         if (/TaskID=\d+/i.test(desc)) return;
         const title = String(ev.getTitle() || ''), loc = String(ev.getLocation() || '');
@@ -20295,17 +20325,37 @@ function tmv3_verticalProductionCycle_(vertical, options) {
     const props=PropertiesService.getScriptProperties(),now=Date.now();
     const stateKey='TMV3_VERTICAL_SWEEP_'+vertical+(weekScope ? '_RANGE_'+weekScope.fromDay+'_'+weekScope.toDay : '')+(targetIds?'_TARGET_'+tmv3_hash_(targetIds.slice().sort().join('|')):'');
     let state=JSON.parse(props.getProperty(stateKey)||'null');
+    // A sweep's event list is a snapshot taken when it started. One older than a day misses every event
+    // booked since (Service ran a 2026-11-09 snapshot until 2026-11-23): start a fresh sweep instead.
+    if(state && !state.complete && !weekScope && !targetIds && now-Number(state.id||0)>TMV3_VERTICAL_SWEEP_MAX_AGE_MS) {
+      tmv3_audit_(vertical,'','','VERTICAL_SWEEP','EXPIRED_RESTARTED',JSON.stringify({sweepId:state.id,cursor:state.cursor,total:state.total}));
+      state=null;
+    }
     if(!state || state.complete) {
-      if(vertical==='Install') {
+      if(['Install','Delivery','Service'].indexOf(vertical)>=0 && !weekScope && !targetIds) {
         const budget=tmv3_strivenApiBudgetStatus_();
         if(budget.exhausted || budget.remaining<Number(policy.verticalProductionMinApiRemaining||60))return Object.assign(result,{status:'API_BUDGET_WAIT'});
         result.sources=tmv3_slotSourceRefresh_();
-        result.intake=tmv3_installRefreshView_('INSTALL_SWEEP_START');
+        // Every new sweep works from the live Calendars: rebuild this workflow's tab first (no Striven or
+        // Calendar writes). Delivery and Service used to sweep a stale tab and found no new events.
+        try {
+          result.intake=vertical==='Install' ? tmv3_installRefreshView_('INSTALL_SWEEP_START') :
+            vertical==='Delivery' ? tmv3_deliveryRefreshView_('DELIVERY_SWEEP_START') :
+            tmv3_verticalRefreshView_(vertical,'SERVICE_SWEEP_START');
+        } catch(err) {
+          const message=String(err && err.message || err);
+          tmv3_audit_(vertical,'','','VERTICAL_INTAKE_REFRESH','ATTENTION',message);
+          throw Error('VERTICAL_INTAKE_REFRESH_FAILED_NO_SWEEP:'+vertical+': '+message.slice(0,200));
+        }
       }
       // Consume the existing intake queue; each event is freshly verified below.
       // Rebuilding every operator sheet here can consume the entire execution.
       const today=tmv3_step6LocalDay_(new Date()),seen={};
-      const events=tmv3_rows_(TMV3.VERTICALS[vertical].sheet).filter(function(row){
+      const tabRows=tmv3_rows_(TMV3.VERTICALS[vertical].sheet);
+      // A tab in another layout has no 'Calendar Start': every row would be skipped and the sweep would
+      // silently find nothing (Delivery 2026-11-23). Stop and report instead.
+      if(tabRows.length && !('Calendar Start' in tabRows[0]))throw Error('VERTICAL_TAB_LAYOUT_NOT_STEP1_NO_SWEEP:'+vertical);
+      const events=tabRows.filter(function(row){
         const id=tmv3_clean_(row['Event ID']),day=tmv3_step6LocalDay_(row['Calendar Start']);
         if(!id||seen[id]||targetIds && targetIds.indexOf(id)<0||!day||day<(weekScope ? weekScope.fromDay : today)||weekScope && day>=weekScope.toDay)return false;seen[id]=true;return true;
       }).sort(function(a,b){return new Date(a['Calendar Start'])-new Date(b['Calendar Start']);});
@@ -20360,6 +20410,12 @@ function tmv3_verticalProductionCycle_(vertical, options) {
           props.deleteProperty(key);prior=null;
           tmv3_audit_(vertical,id,'','KNOWN_PREWRITE_REJECTION_RECOVERED','PASS','Duplicate report rows for one Customer ID; canonical ownership checks remain required.');
         }
+        // Errors proven to be thrown before any Striven write (see tmv3_verticalPrewriteRejection_) are
+        // review items, not uncertain writes: release holds left by them (Kerry Warren, held since 2026-11-18).
+        if(prior && prior.state==='UNCERTAIN' && tmv3_verticalPrewriteRejection_(prior.error, prior.plan || '')) {
+          props.deleteProperty(key);prior=null;
+          tmv3_audit_(vertical,id,'','KNOWN_PREWRITE_REJECTION_RECOVERED','PASS','Held error was a proven pre-write rejection; event re-planned from fresh Striven evidence.');
+        }
         const noTaskActions=plans.every(function(p){return p.plan==='NO_CHANGE' && (p.actions||[]).every(function(a){return a==='VERIFY_CALENDAR_LINKS';});});
         if(prior && ['INTENT','UNCERTAIN'].indexOf(prior.state)>=0 && !noTaskActions) {
           result.results.push({eventId:id,status:'UNCERTAIN_RECONCILIATION_REQUIRED'});continue;
@@ -20388,10 +20444,14 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         tmv3_audit_(vertical,id,'','VERTICAL_AUTO','PASS',JSON.stringify(result.results[result.results.length-1]));
       } catch(err) {
         const message=String(err && err.message || err);
-        if(writeStarted)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500)}));
-        result.results.push({eventId:id,status:writeStarted?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
-        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',message);
-        if(writeStarted)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
+        // A proven pre-write rejection changed nothing in Striven: report it for review, never hold the event.
+        const heldPlan=writeStarted ? String((JSON.parse(props.getProperty(key)||'{}')||{}).plan||'') : '';
+        const uncertain=writeStarted && !tmv3_verticalPrewriteRejection_(message,heldPlan);
+        if(uncertain)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500),plan:heldPlan}));
+        else if(writeStarted)props.deleteProperty(key);
+        result.results.push({eventId:id,status:uncertain?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
+        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',(uncertain?'':'PREWRITE_REJECTION_REVIEW: ')+message);
+        if(uncertain)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
       } finally {
         const outcome=result.results[result.results.length-1]||{status:'UNKNOWN'};
         state.cursor=i+1;state.scanned++;
@@ -20538,6 +20598,58 @@ function tmv3_automationSheetRefreshStatus() {
 var TMV3_VERTICAL_FOLLOW_ON = {};
 // One slot run may spend this long on the sweep, leaving time for Install notices inside the 6-minute limit.
 const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
+/** True only for errors that the Step 7 executor throws before its first Striven write, so nothing was
+ * changed and the event can be re-planned instead of held as an uncertain write:
+ *  - RECREATE source selection (tmv3_findRecreateSourceTask_) runs inside tmv3_buildCreateSource_,
+ *    before the durable create guard and the Task POST. It never follows a Location create when the
+ *    held plan has no CREATE_LOCATION.
+ * Location ownership failures are NOT included: they can follow tmv3_ensureStep7Location_, which may
+ * already have created a Location (Klement 2026-11-14, Location 58743). */
+/** True when the text starts with a civic number followed by a street name ("4722 Old Simcoe St",
+ * "1360 Glenanna Rd, Unit 9A"); false for intersections, landmarks and street names alone. */
+function tmv3_isStreetAddress_(value) {
+  const text = tmv3_clean_(value);
+  if (!text || /\s\/\s|\s&\s|\bat\b|\bcorner of\b/i.test(text.split(',')[0])) return false;
+  return /^(?:unit\s*\w+\s*[-,]?\s*)?\d{1,6}[a-z]?\s+\S+/i.test(text);
+}
+
+function tmv3_verticalPrewriteRejection_(message, plan) {
+  const text=String(message||'');
+  if(/^RECREATE requires exactly one completed source Task; found \d+\.$/.test(text) && !/LOCATION/i.test(String(plan||'')))return true;
+  return false;
+}
+
+// An unfinished sweep older than this is restarted from the live Calendars (see tmv3_verticalProductionCycle_).
+const TMV3_VERTICAL_SWEEP_MAX_AGE_MS = 24 * 3600000;
+
+/** Rebuild one workflow's tab from its live Calendars through the Step 2-6 decision pipeline, in the
+ * layout the sweep reads (TMV3_STEP1_HEADERS). Read-only for Striven and Calendar. Used for Service;
+ * Install and Delivery keep their own equivalents (tmv3_installRefreshView_, tmv3_deliveryRefreshView_). */
+function tmv3_verticalRefreshView_(vertical, reason) {
+  const cfg=TMV3.VERTICALS[vertical],start=new Date(),end=new Date();
+  if(!cfg)throw Error('UNKNOWN_VERTICAL:'+vertical);
+  start.setDate(start.getDate()-Number(cfg.lookbackDays||0));start.setHours(0,0,0,0);
+  end.setDate(end.getDate()+Number(cfg.lookaheadDays||365));end.setHours(23,59,59,999);
+  const input=[];
+  tmv3_verticalCalendars_(vertical,cfg).forEach(function(calCfg){
+    const calendar=CalendarApp.getCalendarById(calCfg.calendarId);
+    if(!calendar)throw Error(vertical.toUpperCase()+'_CALENDAR_UNAVAILABLE:'+(calCfg.technician||calCfg.calendarName||calCfg.calendarId));
+    const resolved=Object.assign({},calCfg,{calendarName:calendar.getName()});
+    calendar.getEvents(start,end).forEach(function(event){const record=tmv3_calendarEvent_(vertical,cfg,resolved,event,{applyEligibility:false});if(record)input.push(record);});
+  });
+  const records=tmv3_mergeLogicalCalendarRecords_(input);
+  const stage2=tmv3_step2CalendarRecords_(records);
+  const stage3=tmv3_step3BusinessAnchorRecords_(stage2,tmv3_step3AnchorIndex_());
+  const stage4=tmv3_step4IdentityRecords_(stage3,tmv3_step4IdentityIndex_());
+  const stage5=tmv3_step5TaskRecords_(stage4,tmv3_step5TaskIndex_());
+  const decisions=tmv3_step6DecisionRecords_(stage5).sort(function(a,b){return new Date(a.start)-new Date(b.start);});
+  const prior=tmv3_sheet_(cfg.sheet).getLastRow();
+  tmv3_replaceRows_(cfg.sheet,TMV3_STEP1_HEADERS.slice(),decisions.map(tmv3_step6OperatorRow_));
+  tmv3_step1FormatOperatorView_(cfg.sheet,vertical,decisions,prior);
+  const count=tmv3_rows_(cfg.sheet).filter(function(r){return !!tmv3_clean_(r['Event ID']);}).length;
+  if(count!==decisions.length)throw Error(vertical.toUpperCase()+'_VIEW_ROW_READBACK_FAILED');
+  return {status:vertical.toUpperCase()+'_VIEW_REFRESHED',at:new Date().toISOString(),reason:reason,rows:count,strivenWrites:0,calendarWrites:0};
+}
 
 function tmv3_runFullVerticalSweep_(vertical, options) {
   options = options || {};
@@ -20567,8 +20679,10 @@ function tmv3_runFullVerticalSweep_(vertical, options) {
   if(lockRetries.length)result.lockRetries=lockRetries.length;
   result.writes=totalWrites;result.scanned=totalScanned;result.results=allResults;
   if(result.status==='LOCK_BUSY'||result.pending>0) {
-    result.continuation='DEFERRED_TO_NEXT_STANDARD_SLOT';
-    if(followOn && result.status!=='API_BUDGET_WAIT') {
+    // Inside the slot chain the same workflow runs again until its sweep is done (operator rule 2026-11-23).
+    result.continuation=options.inSlotChain===true && result.status!=='API_BUDGET_WAIT' ?
+      'SLOT_CHAIN_NEXT_PASS' : 'DEFERRED_TO_NEXT_STANDARD_SLOT';
+    if(followOn && options.inSlotChain!==true && result.status!=='API_BUDGET_WAIT') {
       try { result.continuation=tmv3_verticalScheduleFollowOn_(vertical); }
       catch(err) { result.continuation='FOLLOW_ON_SCHEDULING_FAILED: '+String(err && err.message || err).slice(0,160); }
     }

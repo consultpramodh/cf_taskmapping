@@ -71,17 +71,19 @@ function tmv3_standardDailySchedule_() {
 }
 
 // Original: 60_Automation; Function: tmv3_standardVerticalSlot_
-function tmv3_standardVerticalSlot_(vertical,slot) {
-  const result=tmv3_runFullVerticalSweep_(vertical);
-  if(vertical==='Install') {
+function tmv3_standardVerticalSlot_(vertical,slot,options) {
+  options=options||{};
+  const result=tmv3_runFullVerticalSweep_(vertical,options);
+  // Reminders run once per slot (first pass); continuation passes only finish the sweep.
+  if(vertical==='Install' && options.continuationPass!==true) {
     result.reminders=tmv3_installReminderCheck();
   }
-  tmv3_audit_(vertical,'','','STANDARD_DAILY_SLOT',result.status,tmv3_verticalRunSummary_(slot,result));
+  tmv3_audit_(vertical,'','','STANDARD_DAILY_SLOT',result.status,tmv3_verticalRunSummary_(slot,result,options.pass));
   return result;
 }
 
 /** One TM Audit row per run: counts by outcome, plus only the installs that changed or need attention. */
-function tmv3_verticalRunSummary_(slot,result) {
+function tmv3_verticalRunSummary_(slot,result,pass) {
   const counts={},items=[];
   (result.results||[]).forEach(function(r){
     counts[r.status]=(counts[r.status]||0)+1;
@@ -90,8 +92,8 @@ function tmv3_verticalRunSummary_(slot,result) {
     items.push({eventId:r.eventId,status:r.status,error:String(r.error||'').slice(0,160)||undefined,
       changes:r.executions?r.executions.map(function(e){return (e.actions||[]).filter(function(a){return a!=='VERIFY_CALENDAR_LINKS';}).join('+');}).join(','):undefined});
   });
-  const out={slot:slot,status:result.status,checked:Number(result.scanned||0),writes:Number(result.writes||0),
-    pending:Number(result.pending||0),counts:counts,items:items,reminders:result.reminders};
+  const out={slot:slot,pass:Number(pass||1),status:result.status,checked:Number(result.scanned||0),writes:Number(result.writes||0),
+    pending:Number(result.pending||0),continuation:result.continuation||undefined,counts:counts,items:items,reminders:result.reminders};
   let text=JSON.stringify(out);
   // A Sheets cell holds 50,000 characters.
   while(text.length>45000 && out.items.length){out.items.length=Math.floor(out.items.length/2);out.itemsTruncated=true;text=JSON.stringify(out);}
@@ -109,9 +111,13 @@ function tmv3_sourceRefreshSlot() {
   const started = Date.now(), props = PropertiesService.getScriptProperties();
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(120000)) {
-    tmv3_audit_('SYSTEM','','','SOURCE_REFRESH','LOCK_BUSY','');
-    return {status:'LOCK_BUSY'};
+    // A long slot chain holds the lock (2026-11-23 11:03): try again in 5 minutes instead of skipping
+    // the refresh, which would leave the next slot on old Striven data or refreshing inline.
+    const retry = tmv3_sourceRefreshScheduleRetry_();
+    tmv3_audit_('SYSTEM','','','SOURCE_REFRESH','LOCK_BUSY',JSON.stringify({retry:retry}));
+    return {status:'LOCK_BUSY',retry:retry};
   }
+  tmv3_sourceRefreshClearRetry_();
   let result;
   try {
     // Recorded before the refresh, so a timed-out refresh still keeps the slots from retrying it inline.
@@ -124,6 +130,30 @@ function tmv3_sourceRefreshSlot() {
   result.seconds = Math.round((Date.now() - started) / 1000);
   tmv3_audit_('SYSTEM','','','SOURCE_REFRESH',result.status,JSON.stringify(result));
   return result;
+}
+
+const TMV3_SOURCE_REFRESH_RETRY_HANDLER = 'tmv3_sourceRefreshRetry';
+const TMV3_SOURCE_REFRESH_MAX_RETRIES = 18; // 5-minute retries: up to 90 minutes after the scheduled time
+
+/** One-off trigger handler: the scheduled source refresh found the lock busy. */
+function tmv3_sourceRefreshRetry() { return tmv3_sourceRefreshSlot(); }
+
+function tmv3_sourceRefreshClearRetry_() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === TMV3_SOURCE_REFRESH_RETRY_HANDLER) ScriptApp.deleteTrigger(t);
+  });
+}
+
+function tmv3_sourceRefreshScheduleRetry_() {
+  const props = PropertiesService.getScriptProperties();
+  const window = Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd') + '_' +
+    TMV3_SOURCE_REFRESH_HOURS.filter(function(h) { return h <= Number(Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'H')); }).slice(-1)[0];
+  const key = 'TMV3_SOURCE_REFRESH_RETRIES_' + window, count = Number(props.getProperty(key) || 0);
+  if (count >= TMV3_SOURCE_REFRESH_MAX_RETRIES) return 'RETRY_LIMIT_REACHED';
+  tmv3_sourceRefreshClearRetry_();
+  ScriptApp.newTrigger(TMV3_SOURCE_REFRESH_RETRY_HANDLER).timeBased().after(5 * 60000).create();
+  props.setProperty(key, String(count + 1));
+  return 'RETRY_IN_5_MINUTES_' + (count + 1);
 }
 
 /** Used by the business slots instead of refreshing inline. Falls back to the inline refresh only when
@@ -148,8 +178,19 @@ const TMV3_SLOT_CHAIN_KEY = 'TMV3_SLOT_CHAIN';
 const TMV3_SLOT_CHAIN_NEXT_HANDLER = 'tmv3_slotChainNext';
 // Gap between one workflow finishing and the next one starting.
 const TMV3_SLOT_CHAIN_GAP_MS = 60000;
-// A step still marked RUNNING after this long was killed by the Apps Script time limit: move on.
-const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 35 * 60000;
+// A pass still marked RUNNING is checked after 12 minutes. It is treated as dead (and the same workflow
+// is rerun) only when nothing has written a TM Audit row for 10 minutes, or after 31 minutes in any case
+// (past this project's 30-minute execution limit). One slow event can hold a pass ~11 minutes
+// (2026-11-23 10:09 pass 3), so age alone is not proof. Was a flat 35 minutes, which stalled chains.
+const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 12 * 60000;
+const TMV3_SLOT_CHAIN_STEP_IDLE_MS = 10 * 60000;
+const TMV3_SLOT_CHAIN_STEP_HARD_TIMEOUT_MS = 31 * 60000;
+const TMV3_SLOT_CHAIN_RECHECK_MS = 5 * 60000;
+// Operator rule 2026-11-23: a slot resolves every event that needs it at that slot; nothing is left for
+// the next slot. A workflow whose sweep still has events after one run is run again (its sweep resumes
+// from its cursor), each pass in its own execution, before the chain moves to the next workflow.
+// The cap only stops a sweep that never finishes; hitting it is reported as SLOT_CHAIN/PASS_LIMIT.
+const TMV3_SLOT_CHAIN_MAX_PASSES = 20;
 
 /** Trigger handlers installed by tmv3_installStandardDailyTriggers (one per slot). */
 function tmv3_standardSlot0800() { return tmv3_slotChainStart_('08:00'); }
@@ -194,10 +235,33 @@ function tmv3_slotChainSchedule_(delayMs) {
   ScriptApp.newTrigger(TMV3_SLOT_CHAIN_NEXT_HANDLER).timeBased().after(Math.max(60000, delayMs)).create();
 }
 
-/** Runs one workflow's standard slot exactly as its own trigger used to. */
-function tmv3_slotChainRunVertical_(vertical, slot) {
-  if (vertical === 'PreInspection') return tmv3_runPreInspectionDailySlot_(slot);
-  return tmv3_standardVerticalSlot_(vertical, slot);
+/** Runs one pass of one workflow's standard slot. Pass 1 is the full slot run; later passes only
+ * continue the sweep (no second Calendar review, off-shared notices or Install reminders). */
+function tmv3_slotChainRunVertical_(vertical, slot, pass) {
+  const options = {inSlotChain:true, pass:pass || 1, continuationPass:(pass || 1) > 1};
+  if (vertical === 'PreInspection') return tmv3_runPreInspectionDailySlot_(slot, options);
+  return tmv3_standardVerticalSlot_(vertical, slot, options);
+}
+
+/** Events this workflow's sweep still has to look at after a pass; 0 when its sweep is finished. */
+function tmv3_slotChainRemaining_(vertical, result) {
+  result = result || {};
+  if (vertical === 'PreInspection') return Number(result.sweep && result.sweep.remaining || 0);
+  return Number(result.pending || 0);
+}
+
+/** Whether the chain must run this workflow again before moving on, and why not when it must not. */
+function tmv3_slotChainNeedsAnotherPass_(vertical, result, pass) {
+  result = result || {};
+  const status = String(result.status || '');
+  const remaining = tmv3_slotChainRemaining_(vertical, result);
+  if (status === 'API_BUDGET_WAIT') return {again:false, reason:'API_BUDGET_WAIT', remaining:remaining};
+  if (status !== 'LOCK_BUSY' && remaining <= 0) return {again:false, reason:'SWEEP_DONE', remaining:0};
+  const progressed = Number(vertical === 'PreInspection' ? result.processed : result.scanned) > 0;
+  // No progress without a lock reason: the sweep is stuck on something another pass will not fix.
+  if (status !== 'LOCK_BUSY' && !progressed) return {again:false, reason:'NO_PROGRESS', remaining:remaining};
+  if (pass >= TMV3_SLOT_CHAIN_MAX_PASSES) return {again:false, reason:'PASS_LIMIT', remaining:remaining};
+  return {again:true, reason:status === 'LOCK_BUSY' ? 'LOCK_BUSY' : 'EVENTS_REMAINING', remaining:remaining};
 }
 
 /** Slot trigger: start a new ordered run with the first workflow (PreInspection). */
@@ -210,7 +274,7 @@ function tmv3_slotChainStart_(slot) {
       skipped:prior.order.slice(prior.index), current:prior.step || null}));
   }
   const state = {slot:slot, day:Utilities.formatDate(new Date(), TMV3_TIMEZONE, 'yyyy-MM-dd'),
-    order:tmv3_standardDailySchedule_().verticals.slice(), index:0, status:'RUNNING',
+    order:tmv3_standardDailySchedule_().verticals.slice(), index:0, pass:0, status:'RUNNING',
     startedAt:new Date().toISOString(), steps:[]};
   tmv3_slotChainWrite_(state);
   return tmv3_slotChainRunCurrent_(state);
@@ -222,15 +286,34 @@ function tmv3_slotChainNext() {
   if (!state || state.status !== 'RUNNING') { tmv3_slotChainClearTriggers_(); return {status:'NO_ACTIVE_SLOT_CHAIN'}; }
   const step = state.step;
   if (step && step.status === 'RUNNING') {
-    const age = Date.now() - new Date(step.startedAt).getTime();
-    if (age < TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS) {
-      // Still inside its time limit (should not happen): check again when the limit has passed.
-      tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS - age + 60000);
-      return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical};
+    const startedMs = new Date(step.startedAt).getTime(), age = Date.now() - startedMs;
+    // Exact liveness: the running pass holds the document lock, which Apps Script releases when that
+    // execution ends for any reason (finished, failed or killed). Busy = alive, whatever its age or
+    // audit activity (2026-11-23 13:19: a live PreInspection pass doing a 10+ minute inline source
+    // refresh was declared dead and a second copy ran alongside it).
+    const liveness = tmv3_slotChainLivenessLock_();
+    if (liveness) {
+      if (!liveness.tryLock(1000)) {
+        tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_RECHECK_MS);
+        return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical, ageMinutes:Math.round(age / 60000), liveness:'LOCK_HELD'};
+      }
+      liveness.releaseLock();
+    }
+    const lastActivity = Math.max(startedMs, Number(PropertiesService.getScriptProperties().getProperty('TMV3_LAST_AUDIT_AT') || 0));
+    const idle = Date.now() - lastActivity;
+    // With the liveness lock free the pass has ended; the age/idle rule only applies without that lock.
+    const dead = !!liveness || age >= TMV3_SLOT_CHAIN_STEP_HARD_TIMEOUT_MS ||
+      (age >= TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS && idle >= TMV3_SLOT_CHAIN_STEP_IDLE_MS);
+    if (!dead) {
+      // Still working (recent audit activity): look again shortly instead of starting a second copy.
+      tmv3_slotChainSchedule_(age < TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS ? TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS - age + 60000 : TMV3_SLOT_CHAIN_RECHECK_MS);
+      return {status:'SLOT_CHAIN_STEP_STILL_RUNNING', vertical:step.vertical, ageMinutes:Math.round(age / 60000), idleMinutes:Math.round(idle / 60000)};
     }
     step.status = 'TIMED_OUT'; step.finishedAt = new Date().toISOString();
-    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'STEP_TIMED_OUT', JSON.stringify({slot:state.slot, vertical:step.vertical, startedAt:step.startedAt}));
-    state.steps.push(step); state.step = null; state.index++;
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', 'STEP_TIMED_OUT', JSON.stringify({slot:state.slot, vertical:step.vertical, pass:step.pass || 1, startedAt:step.startedAt}));
+    state.steps.push(step); state.step = null;
+    // The killed pass saved its sweep cursor batch by batch: run the same workflow again; move on only at the cap.
+    if (Number(state.pass || 0) >= TMV3_SLOT_CHAIN_MAX_PASSES) { state.index++; state.pass = 0; }
     tmv3_slotChainWrite_(state);
   }
   return tmv3_slotChainRunCurrent_(state);
@@ -244,12 +327,30 @@ function tmv3_slotChainRunCurrent_(state) {
     return {status:'SLOT_CHAIN_COMPLETE', slot:state.slot, steps:state.steps};
   }
   const vertical = state.order[state.index];
-  state.step = {vertical:vertical, status:'RUNNING', startedAt:new Date().toISOString()};
+  // Never run two passes at once: a pass from an earlier (abandoned) chain may still be running.
+  const liveness = tmv3_slotChainLivenessLock_();
+  if (liveness && !liveness.tryLock(5000)) {
+    tmv3_slotChainSchedule_(2 * 60000);
+    return {status:'SLOT_CHAIN_WAITING_FOR_RUNNING_PASS', vertical:vertical};
+  }
+  try { return tmv3_slotChainRunPass_(state, vertical); }
+  finally { if (liveness) liveness.releaseLock(); }
+}
+
+/** The lock a running chain pass holds for its whole execution (null when not container-bound). */
+function tmv3_slotChainLivenessLock_() {
+  try { return LockService.getDocumentLock(); } catch (ignored) { return null; }
+}
+
+function tmv3_slotChainRunPass_(state, vertical) {
+  const pass = Number(state.pass || 0) + 1;
+  state.pass = pass;
+  state.step = {vertical:vertical, pass:pass, status:'RUNNING', startedAt:new Date().toISOString()};
   tmv3_slotChainWrite_(state);
   // Safety net first: if this execution is killed by the time limit, the one-off trigger moves the chain on.
   tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS);
   let result;
-  try { result = tmv3_slotChainRunVertical_(vertical, state.slot) || {}; }
+  try { result = tmv3_slotChainRunVertical_(vertical, state.slot, pass) || {}; }
   catch (err) {
     result = {status:'ATTENTION', error:String(err && err.message || err).slice(0, 300)};
     try { tmv3_audit_(vertical, '', '', 'STANDARD_DAILY_SLOT', 'ATTENTION', JSON.stringify({slot:state.slot, error:result.error})); } catch (ignored) {}
@@ -257,9 +358,23 @@ function tmv3_slotChainRunCurrent_(state) {
   // A newer slot may have taken over while this step ran; never overwrite its state.
   const latest = tmv3_slotChainRead_();
   if (!latest || latest.startedAt !== state.startedAt) return {status:'SLOT_CHAIN_SUPERSEDED', vertical:vertical, result:result};
-  state.step.status = 'DONE'; state.step.result = String(result.status || 'UNKNOWN');
+  const next = tmv3_slotChainNeedsAnotherPass_(vertical, result, pass);
+  state.step.result = String(result.status || 'UNKNOWN');
+  state.step.remaining = next.remaining;
   state.step.finishedAt = new Date().toISOString();
-  state.steps.push(state.step); state.step = null; state.index++;
+  if (next.again) {
+    // Same workflow again in its own execution: its sweep resumes where this pass stopped.
+    state.step.status = 'CONTINUE';
+    state.steps.push(state.step); state.step = null;
+    tmv3_slotChainWrite_(state);
+    tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_GAP_MS);
+    return {status:'SLOT_CHAIN_SAME_WORKFLOW_NEXT_PASS', vertical:vertical, pass:pass, remaining:next.remaining, result:result};
+  }
+  state.step.status = next.reason === 'SWEEP_DONE' ? 'DONE' : 'UNRESOLVED_' + next.reason;
+  if (next.reason !== 'SWEEP_DONE')
+    tmv3_audit_('SYSTEM', '', '', 'SLOT_CHAIN', next.reason, JSON.stringify({slot:state.slot, vertical:vertical,
+      pass:pass, remaining:next.remaining, status:result.status || ''}));
+  state.steps.push(state.step); state.step = null; state.index++; state.pass = 0;
   tmv3_slotChainWrite_(state);
   if (state.index >= state.order.length) return tmv3_slotChainRunCurrent_(state);
   tmv3_slotChainSchedule_(TMV3_SLOT_CHAIN_GAP_MS);

@@ -35,6 +35,16 @@ var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;
 // Daily slots also find verified pre-inspections booked on rep calendars without
 // CF Preinspects as a guest, and notify the creator. No Task until it is shared.
 var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
+// Operator decision 2026-11-23: a rep-booked pre-inspection left only on Stephen's calendar is shared to
+// CF Preinspects by the automation (notifications off) when its Striven Customer is proven, then
+// processed in the same slot. Unproven ones keep the email to the booker. Stephen's own bookings,
+// service calls, installs and meetings are never touched (tmv3_piRepBookedIntent_).
+var TMV3_PI_AUTO_SHARE_PROVEN = true;
+// Operator 2026-11-23: incomplete events are candidates too. A rep-booked pre-inspection whose Striven
+// Customer is not proven yet (not in Striven, no Customer #, no street address) is also shared, so it
+// is tracked on CF Preinspects, processed as far as its data allows and its booker is asked for what
+// is missing. Same intent exclusions as above.
+var TMV3_PI_AUTO_SHARE_UNPROVEN = true;
 // "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
 // question email is approved (send a TEST first with piTest_SendQuestionTest).
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
@@ -2092,7 +2102,28 @@ function tmv3_piRecoverPendingEvents_(cycle, records) {
   });
 }
 
-/** Stage D (sweep): durable position by start|eventId survives batch boundaries. */
+/** Short form of an event fingerprint kept in the sweep's coverage map (Script Properties are 9 KB). */
+function tmv3_piSweepFingerprint_(record) {
+  return String(record && record.fingerprint || '').slice(0, 16);
+}
+
+/** True when this sweep already handled the event as it is now: same calendar fingerprint, or a
+ * verified write in the last hour left it at this fingerprint (its own link/title write changes it). */
+function tmv3_piSweepCovered_(sweep, record) {
+  const fp = tmv3_piSweepFingerprint_(record);
+  if (!fp || !sweep || !sweep.covered) return false;
+  if (sweep.covered[record.eventId] === fp) return true;
+  if (!(record.eventId in sweep.covered)) return false;
+  try {
+    const done = JSON.parse(tmv3_piEphemeral_().get('TMV3_PI_DONE_' + tmv3_hash_(record.eventId)) || 'null');
+    return !!(done && tmv3_piSweepFingerprint_(done) === fp && Date.now() - Number(done.at || 0) < 3600000);
+  } catch (ignored) { return false; }
+}
+
+/** Stage D (sweep). Operator rule 2026-11-23: a slot resolves every event that needs it, including
+ * events added or changed after the sweep started and today's events whose time has passed.
+ * The sweep is done only when every current event (today 00:00 onward) has been handled at its
+ * current fingerprint. Today's events go first, then the rest by start time. */
 function tmv3_piSelectSweepBatch_(cycle, selected) {
   const raw = cycle.props.getProperty('TMV3_PI_SWEEP_STATE') || '';
   let prior = null;
@@ -2101,12 +2132,25 @@ function tmv3_piSelectSweepBatch_(cycle, selected) {
     isFinite(new Date(prior.startedAt).getTime()) &&
     cycle.now - new Date(prior.startedAt).getTime() < 86400000;
   if (cycle.options.sweepContinue === true && !valid) return null;
-  cycle.sweep = valid ? prior : {status:'IN_PROGRESS',startedAt:new Date(cycle.now).toISOString(),lastKey:'',processed:0};
+  cycle.sweep = valid ? prior : {status:'IN_PROGRESS',startedAt:new Date(cycle.now).toISOString(),lastKey:'',processed:0,covered:{}};
+  if (!cycle.sweep.covered) {
+    // Sweep started by the previous release (cursor only): everything before its cursor was handled.
+    cycle.sweep.covered = {};
+    selected.forEach(function(r) {
+      if (tmv3_preInspectionSweepKey_(r) <= String(cycle.sweep.lastKey || '')) cycle.sweep.covered[r.eventId] = tmv3_piSweepFingerprint_(r);
+    });
+  }
+  // Drop coverage for events no longer on the calendar so the map stays small.
+  const live = {};
+  selected.forEach(function(r) { live[r.eventId] = true; });
+  Object.keys(cycle.sweep.covered).forEach(function(id) { if (!live[id]) delete cycle.sweep.covered[id]; });
+  const todayText = Utilities.formatDate(new Date(cycle.now), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const isToday = function(r) { return Utilities.formatDate(new Date(r.start), TMV3_TIMEZONE, 'yyyy-MM-dd') === todayText ? 0 : 1; };
   selected.sort(function(a, b) {
-    const aa = tmv3_preInspectionSweepKey_(a), bb = tmv3_preInspectionSweepKey_(b);
+    const aa = isToday(a) + '|' + tmv3_preInspectionSweepKey_(a), bb = isToday(b) + '|' + tmv3_preInspectionSweepKey_(b);
     return aa < bb ? -1 : aa > bb ? 1 : 0;
   });
-  return selected.filter(function(r) { return tmv3_preInspectionSweepKey_(r) > cycle.sweep.lastKey; });
+  return selected.filter(function(r) { return !tmv3_piSweepCovered_(cycle.sweep, r); });
 }
 
 /** Stage F for one authoritative event: plan → guards → execute → notify → verify. */
@@ -2247,6 +2291,9 @@ function tmv3_piPersistCycle_(cycle, selected, cursor) {
   const result = cycle.result, props = cycle.props, sweep = cycle.sweep;
   if (sweep) {
     if (result.processed) sweep.lastKey = tmv3_preInspectionSweepKey_(selected[result.processed - 1]);
+    // Handled in this batch at the fingerprint it was selected with (deferred events are not counted).
+    sweep.covered = sweep.covered || {};
+    selected.slice(0, result.processed).forEach(function(r) { sweep.covered[r.eventId] = tmv3_piSweepFingerprint_(r); });
     sweep.processed = Number(sweep.processed || 0) + result.processed;
     const remaining = Math.max(0, selected.length - result.processed);
     sweep.status = remaining ? 'IN_PROGRESS' : (cycle.pending.length ? 'SCANNED_WITH_PENDING_REVIEW' : 'COMPLETE');
@@ -2314,7 +2361,8 @@ function tmv3_piCycleBody_(cycle) {
   }
 
   // Stage E: slots evaluate deadlines for all authoritative events; continuations do not rescan mail.
-  const notificationRecords = options.sweepContinue === true ? [] : (scopeEventId ? selected : records);
+  const notificationRecords = options.sweepContinue === true || options.skipNotificationScan === true ? [] :
+    (scopeEventId ? selected : records);
   notificationRecords.filter(function(r) {
     return r.calendarRole === 'PRIMARY_SHARED' && !tmv3_preInspectionApprovalHold_(r.eventId);
   }).forEach(function(r) {
@@ -2510,6 +2558,7 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       const ask = TMV3_PI_VISIT_QUESTIONS_ENABLED === true && !answered;
       const one = {eventId:record.eventId,title:record.title,source:source.calendarName,intent:intent.reason,visitQuestion:ask};
       out.candidateRecords = (out.candidateRecords || []).concat([record]);
+      if (options.identifyOnly === true) { out.events.push(one); return; }
       try {
         if (tmv3_preInspectionApprovalHold_(record.eventId)) one.notification = {status:'OPERATOR_APPROVAL_HOLD_NO_SEND',sent:0};
         else one.notification = tmv3_piSendMissingDetailsAfterRelease_(Object.assign({}, record, {piOffSharedCandidate:true,piVisitQuestion:ask}));
@@ -2520,6 +2569,81 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
   });
   if (out.sourceErrors.length) out.status = 'PARTIAL_SOURCE_ACCESS';
   // Reported in the slot's STANDARD_DAILY_SLOT row (operator 2026-11-18: one audit row per run).
+  return out;
+}
+
+/** Striven Customer proof for an off-shared candidate, from the cached Customers report:
+ * the Customer # exists and its phone or a surname word matches the event, or (no Customer #)
+ * the event phone matches exactly one Customer. Returns the Customer row or null. */
+function tmv3_piAutoShareCustomerProof_(record, index) {
+  const text = String(record.title || '') + ' ' + String(record.descriptionClean || record.rawDescription || '');
+  const phone = tmv3_phone10_(record.phone || tmv3_extractPhone_(text));
+  const number = tmv3_clean_(record.customerNumber);
+  if (number) {
+    const c = index.byNumber[number];
+    if (!c) return null;
+    if (phone && tmv3_phone10_(c['Primary Phone']) === phone) return c;
+    const words = tmv3_norm_(c['Name']).split(/[^a-z]+/).filter(function(w) { return w.length >= 3; });
+    const title = tmv3_norm_(record.title);
+    return words.some(function(w) { return new RegExp('\\b' + w + '\\b').test(title); }) ? c : null;
+  }
+  const matches = phone ? (index.byPhone[phone] || []) : [];
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function tmv3_piAutoShareCustomerIndex_() {
+  const index = {byNumber:{}, byPhone:{}};
+  tmv3_rows_(TMV3.SHEETS.CUSTOMERS).forEach(function(c) {
+    const n = tmv3_clean_(c['Customer Number'] || c['Customer ID']);
+    if (n) index.byNumber[n] = c;
+    const p = tmv3_phone10_(c['Primary Phone']);
+    if (p) (index.byPhone[p] = index.byPhone[p] || []).push(c);
+  });
+  return index;
+}
+
+/** Adds CF Preinspects to proven rep-booked pre-inspections on Stephen's calendar, notifications off
+ * (sendUpdates=none), and reads the guest list back. No other guest, field or event is changed. */
+function tmv3_piAutoShareProvenOffShared_() {
+  if (TMV3_PI_AUTO_SHARE_PROVEN !== true) return {status:'AUTO_SHARE_DISABLED',shared:0};
+  const cfg = TMV3.VERTICALS.PreInspection, primaryId = String(cfg.primaryCalendarId);
+  const scan = tmv3_piNotifyOffSharedCandidates_({identifyOnly:true, maxLiveChecks:12});
+  const out = {status:'COMPLETE', candidates:Number(scan.candidates || 0), shared:0, unproven:[], events:[], errors:[]};
+  const records = scan.candidateRecords || [];
+  if (!records.length) return out;
+  const index = tmv3_piAutoShareCustomerIndex_();
+  const headers = {Authorization:'Bearer ' + ScriptApp.getOAuthToken()};
+  records.forEach(function(record) {
+    const customer = tmv3_piAutoShareCustomerProof_(record, index);
+    if (!customer) {
+      out.unproven.push({eventId:record.eventId, title:record.title});
+      if (TMV3_PI_AUTO_SHARE_UNPROVEN !== true) return;
+    }
+    const bare = String(record.eventId).replace(/@google\.com$/i, '');
+    const url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(record.calendarId) + '/events/' + encodeURIComponent(bare);
+    try {
+      const got = UrlFetchApp.fetch(url, {headers:headers, muteHttpExceptions:true});
+      if (got.getResponseCode() !== 200) throw new Error('READ_HTTP_' + got.getResponseCode());
+      const ev = JSON.parse(got.getContentText());
+      const attendees = (ev.attendees || []).map(function(a) { return {email:a.email, optional:!!a.optional, responseStatus:a.responseStatus}; });
+      if (attendees.some(function(a) { return String(a.email) === primaryId; })) { out.events.push({eventId:record.eventId, status:'ALREADY_SHARED'}); return; }
+      attendees.push({email:primaryId});
+      const res = UrlFetchApp.fetch(url + '?sendUpdates=none', {method:'patch', contentType:'application/json', headers:headers, payload:JSON.stringify({attendees:attendees}), muteHttpExceptions:true});
+      if (res.getResponseCode() !== 200) throw new Error('PATCH_HTTP_' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 150));
+      const back = JSON.parse(res.getContentText());
+      if (!(back.attendees || []).some(function(a) { return String(a.email) === primaryId; })) throw new Error('GUEST_READBACK_MISSING');
+      out.shared++;
+      const one = {eventId:record.eventId, status:customer ? 'SHARED_TO_CF_PREINSPECTS' : 'SHARED_INCOMPLETE',
+        customer:customer ? tmv3_clean_(customer['Customer Number'] || customer['Customer ID']) : '', title:record.title};
+      out.events.push(one);
+      tmv3_audit_('PreInspection', record.eventId, '', 'PI_AUTO_SHARE', 'PASS', JSON.stringify(Object.assign({sendUpdates:'none'}, one)));
+    } catch (err) {
+      out.errors.push({eventId:record.eventId, error:String(err && err.message || err).slice(0, 200)});
+      tmv3_audit_('PreInspection', record.eventId, '', 'PI_AUTO_SHARE', 'ATTENTION', String(err && err.message || err).slice(0, 300));
+    }
+  });
+  if (out.shared) Utilities.sleep(15000); // CF Preinspects shows a new guest copy within seconds (2026-11-23)
+  if (out.errors.length) out.status = 'ATTENTION';
   return out;
 }
 
@@ -2718,6 +2842,8 @@ function tmv3_preInspectionLogSweep_(slot, result) {
     counts:counts,continuation:result.continuation || null,
     error:result.error || '',
     calendarReview:result.calendarReview && result.calendarReview.status || 'NOT_RUN',
+    autoShare:result.autoShare ? {status:result.autoShare.status,candidates:result.autoShare.candidates,shared:result.autoShare.shared,
+      events:result.autoShare.events,unproven:result.autoShare.unproven,errors:result.autoShare.errors} : 'NOT_RUN',
     offShared:result.offShared ? {status:result.offShared.status,checked:result.offShared.checked,
       candidates:result.offShared.candidates,notified:result.offShared.notified,
       events:(result.offShared.events || []).map(function(e) {
@@ -2768,26 +2894,44 @@ function tmv3_preInspectionMaybeContinueSweep_(result) {
 
 /** One slot = one run: read-only Calendar review, batches until done or the time limit, then publish views.
  * No follow-on runs; anything left continues at the next slot. */
-function tmv3_runPreInspectionDailySlot_(slot) {
+function tmv3_runPreInspectionDailySlot_(slot, options) {
+  options = options || {};
   const gate = tmv3_piStagingDisabled_(); if (gate) return gate;
   tmv3_piAssertLockedStandard_();
   const sheetRefreshStarted = Date.now();
+  // A slot-chain continuation pass only finishes this slot's sweep: the Calendar review and
+  // off-shared notices already ran in pass 1 of the same slot.
+  const continuationPass = options.continuationPass === true;
   // Report-only Calendar review; failure keeps the last-good view and never blocks Striven work.
   let calendarReview = null;
-  try { calendarReview = tmv3_piCalendarReviewRefresh_(); }
+  if (continuationPass) calendarReview = {status:'PI_REVIEW_DONE_IN_FIRST_PASS'};
+  else try { calendarReview = tmv3_piCalendarReviewRefresh_(); }
   catch (err) {
     calendarReview = {status:'PI_REVIEW_ATTENTION',error:String(err && err.message || err).slice(0, 400)};
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
-  const deadline = sheetRefreshStarted + 180000;
-  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot});
+  // Proven rep-booked pre-inspections left on Stephen's calendar join CF Preinspects first, so this
+  // slot processes them (operator 2026-11-23). Never on continuation passes.
+  let autoShare = null;
+  if (!continuationPass) {
+    try { autoShare = tmv3_piAutoShareProvenOffShared_(); }
+    catch (err) { autoShare = {status:'ATTENTION', error:String(err && err.message || err).slice(0, 300)}; }
+  }
+  // At least 2 minutes of batch time after the review and auto-share (the chain's next pass continues).
+  const deadline = Math.max(sheetRefreshStarted + 180000, Date.now() + 120000);
+  // sweepStart resumes the slot's unfinished sweep, or starts one when pass 1 never got the lock
+  // (2026-11-23 11:03: pass 1 LOCK_BUSY, pass 2 found no sweep and the slot checked nothing).
+  // Continuation passes skip the missing-details notice scan that pass 1 already ran.
+  let result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,skipNotificationScan:continuationPass,
+    deadline:deadline,reason:'DAILY_SLOT_' + slot + (continuationPass ? '_PASS_' + options.pass : '')});
   // Install, Delivery and Service slots fire in the same hour and each can hold the script lock
   // for up to ~2 minutes. Keep asking (each try waits 30 s) for up to 2.5 minutes instead of
   // giving the whole slot up; the batch time limit below still ends the slot well inside 6 minutes.
   const lockRetries = [];
   while (result.status === 'LOCK_BUSY' && Date.now() - sheetRefreshStarted < 150000) {
     lockRetries.push(new Date().toISOString());
-    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
+    result = tmv3_preInspectionAutomationCycle_({force:true,sweepStart:true,skipNotificationScan:continuationPass,
+      deadline:deadline,reason:'DAILY_SLOT_' + slot + '_LOCK_RETRY'});
   }
   const totals = {processed:Number(result.processed || 0),writes:Number(result.writes || 0),
     notifications:Number(result.notifications || 0),results:(result.results || []).slice()};
@@ -2809,12 +2953,15 @@ function tmv3_runPreInspectionDailySlot_(slot) {
   result.notifications = totals.notifications; result.results = totals.results;
   if (result.status === 'LOCK_BUSY' && TMV3_PI_EPHEMERAL_STATE_IN_CACHE !== true) PropertiesService.getScriptProperties().setProperty('TMV3_PI_RETRY_SWEEP_START', '1');
   tmv3_preInspectionMaybeContinueSweep_(result);
+  // Inside the slot chain the next pass of this slot finishes the sweep (operator rule 2026-11-23).
+  if (options.inSlotChain === true && /^DEFERRED_TO_NEXT_STANDARD_SLOT/.test(String(result.continuation || '')))
+    result.continuation = 'SLOT_CHAIN_NEXT_PASS';
   if (result.sweep && result.sweep.remaining > 0 && result.status === 'COMPLETE') result.status = 'IN_PROGRESS';
   if (result.sweep && result.sweep.remaining === 0 && result.sweep.pendingReview > 0 && result.status === 'COMPLETE')
     result.status = 'ATTENTION_PENDING_REVIEW';
   if (calendarReview && calendarReview.status === 'PI_REVIEW_PARTIAL_SOURCE_ACCESS' && result.status === 'COMPLETE')
     result.status = 'ATTENTION_CALENDAR_COVERAGE';
-  if (TMV3_PI_OFF_SHARED_NOTICES_ENABLED === true) {
+  if (TMV3_PI_OFF_SHARED_NOTICES_ENABLED === true && !continuationPass) {
     try { result.offShared = tmv3_piNotifyOffSharedCandidates_({maxLiveChecks:12}); }
     catch (err) { result.offShared = {status:'ATTENTION',error:String(err && err.message || err).slice(0, 300)}; }
     result.notifications += Number(result.offShared && result.offShared.notified || 0);
@@ -2826,12 +2973,13 @@ function tmv3_runPreInspectionDailySlot_(slot) {
     try { tmv3_audit_('PreInspection', '', '', 'PI_OPERATOR_QUEUE', 'ATTENTION', result.operatorQueue.error); } catch (ignore) {}
   }
   result.calendarReview = calendarReview;
+  if (autoShare) result.autoShare = autoShare;
   if (result.status === 'COMPLETE' && (!result.operatorQueue || result.operatorQueue.status !== 'PI_OPERATOR_VIEW_REFRESHED'))
     result.status = 'ATTENTION_OPERATOR_QUEUE';
   if (result.status === 'COMPLETE' && (!calendarReview ||
-      !/^(?:PI_REVIEW_REFRESHED|PI_REVIEW_UNCHANGED)$/.test(String(calendarReview.status || ''))))
+      !/^(?:PI_REVIEW_REFRESHED|PI_REVIEW_UNCHANGED|PI_REVIEW_DONE_IN_FIRST_PASS)$/.test(String(calendarReview.status || ''))))
     result.status = 'ATTENTION_CALENDAR_COVERAGE';
-  tmv3_preInspectionLogSweep_(slot, result); // audit only after both publication outcomes are known
+  tmv3_preInspectionLogSweep_(continuationPass ? slot + ' pass ' + options.pass : slot, result); // audit only after both publication outcomes are known
   return result;
 }
 
