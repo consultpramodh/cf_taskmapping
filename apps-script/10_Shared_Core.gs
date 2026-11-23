@@ -20382,6 +20382,12 @@ function tmv3_verticalProductionCycle_(vertical, options) {
           props.deleteProperty(key);prior=null;
           tmv3_audit_(vertical,id,'','KNOWN_PREWRITE_REJECTION_RECOVERED','PASS','Duplicate report rows for one Customer ID; canonical ownership checks remain required.');
         }
+        // Errors proven to be thrown before any Striven write (see tmv3_verticalPrewriteRejection_) are
+        // review items, not uncertain writes: release holds left by them (Kerry Warren, held since 2026-11-18).
+        if(prior && prior.state==='UNCERTAIN' && tmv3_verticalPrewriteRejection_(prior.error, prior.plan || '')) {
+          props.deleteProperty(key);prior=null;
+          tmv3_audit_(vertical,id,'','KNOWN_PREWRITE_REJECTION_RECOVERED','PASS','Held error was a proven pre-write rejection; event re-planned from fresh Striven evidence.');
+        }
         const noTaskActions=plans.every(function(p){return p.plan==='NO_CHANGE' && (p.actions||[]).every(function(a){return a==='VERIFY_CALENDAR_LINKS';});});
         if(prior && ['INTENT','UNCERTAIN'].indexOf(prior.state)>=0 && !noTaskActions) {
           result.results.push({eventId:id,status:'UNCERTAIN_RECONCILIATION_REQUIRED'});continue;
@@ -20410,10 +20416,14 @@ function tmv3_verticalProductionCycle_(vertical, options) {
         tmv3_audit_(vertical,id,'','VERTICAL_AUTO','PASS',JSON.stringify(result.results[result.results.length-1]));
       } catch(err) {
         const message=String(err && err.message || err);
-        if(writeStarted)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500)}));
-        result.results.push({eventId:id,status:writeStarted?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
-        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',message);
-        if(writeStarted)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
+        // A proven pre-write rejection changed nothing in Striven: report it for review, never hold the event.
+        const heldPlan=writeStarted ? String((JSON.parse(props.getProperty(key)||'{}')||{}).plan||'') : '';
+        const uncertain=writeStarted && !tmv3_verticalPrewriteRejection_(message,heldPlan);
+        if(uncertain)props.setProperty(key,JSON.stringify({state:'UNCERTAIN',at:Date.now(),error:message.slice(0,500),plan:heldPlan}));
+        else if(writeStarted)props.deleteProperty(key);
+        result.results.push({eventId:id,status:uncertain?'UNCERTAIN_RECONCILIATION_REQUIRED':'REVIEW',error:message});
+        if(writeStarted)tmv3_audit_(vertical,id,'','VERTICAL_AUTO','ATTENTION',(uncertain?'':'PREWRITE_REJECTION_REVIEW: ')+message);
+        if(uncertain)tmv3_verticalAutomationFailureAlert_(vertical,id,message);
       } finally {
         const outcome=result.results[result.results.length-1]||{status:'UNKNOWN'};
         state.cursor=i+1;state.scanned++;
@@ -20560,6 +20570,19 @@ function tmv3_automationSheetRefreshStatus() {
 var TMV3_VERTICAL_FOLLOW_ON = {};
 // One slot run may spend this long on the sweep, leaving time for Install notices inside the 6-minute limit.
 const TMV3_VERTICAL_SWEEP_RUN_MS = 240000;
+/** True only for errors that the Step 7 executor throws before its first Striven write, so nothing was
+ * changed and the event can be re-planned instead of held as an uncertain write:
+ *  - RECREATE source selection (tmv3_findRecreateSourceTask_) runs inside tmv3_buildCreateSource_,
+ *    before the durable create guard and the Task POST. It never follows a Location create when the
+ *    held plan has no CREATE_LOCATION.
+ * Location ownership failures are NOT included: they can follow tmv3_ensureStep7Location_, which may
+ * already have created a Location (Klement 2026-11-14, Location 58743). */
+function tmv3_verticalPrewriteRejection_(message, plan) {
+  const text=String(message||'');
+  if(/^RECREATE requires exactly one completed source Task; found \d+\.$/.test(text) && !/LOCATION/i.test(String(plan||'')))return true;
+  return false;
+}
+
 // An unfinished sweep older than this is restarted from the live Calendars (see tmv3_verticalProductionCycle_).
 const TMV3_VERTICAL_SWEEP_MAX_AGE_MS = 24 * 3600000;
 
