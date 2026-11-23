@@ -35,6 +35,11 @@ var TMV3_PI_NOTIFY_MISSING_SALES_ORDER = true;
 // Daily slots also find verified pre-inspections booked on rep calendars without
 // CF Preinspects as a guest, and notify the creator. No Task until it is shared.
 var TMV3_PI_OFF_SHARED_NOTICES_ENABLED = true;
+// Operator decision 2026-11-23: a rep-booked pre-inspection left only on Stephen's calendar is shared to
+// CF Preinspects by the automation (notifications off) when its Striven Customer is proven, then
+// processed in the same slot. Unproven ones keep the email to the booker. Stephen's own bookings,
+// service calls, installs and meetings are never touched (tmv3_piRepBookedIntent_).
+var TMV3_PI_AUTO_SHARE_PROVEN = true;
 // "Is this a pre-inspection?" YES/NO question for unclear rep bookings. OFF until the
 // question email is approved (send a TEST first with piTest_SendQuestionTest).
 var TMV3_PI_VISIT_QUESTIONS_ENABLED = false;
@@ -2548,6 +2553,7 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
       const ask = TMV3_PI_VISIT_QUESTIONS_ENABLED === true && !answered;
       const one = {eventId:record.eventId,title:record.title,source:source.calendarName,intent:intent.reason,visitQuestion:ask};
       out.candidateRecords = (out.candidateRecords || []).concat([record]);
+      if (options.identifyOnly === true) { out.events.push(one); return; }
       try {
         if (tmv3_preInspectionApprovalHold_(record.eventId)) one.notification = {status:'OPERATOR_APPROVAL_HOLD_NO_SEND',sent:0};
         else one.notification = tmv3_piSendMissingDetailsAfterRelease_(Object.assign({}, record, {piOffSharedCandidate:true,piVisitQuestion:ask}));
@@ -2558,6 +2564,77 @@ function tmv3_piNotifyOffSharedCandidates_(options) {
   });
   if (out.sourceErrors.length) out.status = 'PARTIAL_SOURCE_ACCESS';
   // Reported in the slot's STANDARD_DAILY_SLOT row (operator 2026-11-18: one audit row per run).
+  return out;
+}
+
+/** Striven Customer proof for an off-shared candidate, from the cached Customers report:
+ * the Customer # exists and its phone or a surname word matches the event, or (no Customer #)
+ * the event phone matches exactly one Customer. Returns the Customer row or null. */
+function tmv3_piAutoShareCustomerProof_(record, index) {
+  const text = String(record.title || '') + ' ' + String(record.descriptionClean || record.rawDescription || '');
+  const phone = tmv3_phone10_(record.phone || tmv3_extractPhone_(text));
+  const number = tmv3_clean_(record.customerNumber);
+  if (number) {
+    const c = index.byNumber[number];
+    if (!c) return null;
+    if (phone && tmv3_phone10_(c['Primary Phone']) === phone) return c;
+    const words = tmv3_norm_(c['Name']).split(/[^a-z]+/).filter(function(w) { return w.length >= 3; });
+    const title = tmv3_norm_(record.title);
+    return words.some(function(w) { return new RegExp('\\b' + w + '\\b').test(title); }) ? c : null;
+  }
+  const matches = phone ? (index.byPhone[phone] || []) : [];
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function tmv3_piAutoShareCustomerIndex_() {
+  const index = {byNumber:{}, byPhone:{}};
+  tmv3_rows_(TMV3.SHEETS.CUSTOMERS).forEach(function(c) {
+    const n = tmv3_clean_(c['Customer Number'] || c['Customer ID']);
+    if (n) index.byNumber[n] = c;
+    const p = tmv3_phone10_(c['Primary Phone']);
+    if (p) (index.byPhone[p] = index.byPhone[p] || []).push(c);
+  });
+  return index;
+}
+
+/** Adds CF Preinspects to proven rep-booked pre-inspections on Stephen's calendar, notifications off
+ * (sendUpdates=none), and reads the guest list back. No other guest, field or event is changed. */
+function tmv3_piAutoShareProvenOffShared_() {
+  if (TMV3_PI_AUTO_SHARE_PROVEN !== true) return {status:'AUTO_SHARE_DISABLED',shared:0};
+  const cfg = TMV3.VERTICALS.PreInspection, primaryId = String(cfg.primaryCalendarId);
+  const scan = tmv3_piNotifyOffSharedCandidates_({identifyOnly:true, maxLiveChecks:12});
+  const out = {status:'COMPLETE', candidates:Number(scan.candidates || 0), shared:0, unproven:[], events:[], errors:[]};
+  const records = scan.candidateRecords || [];
+  if (!records.length) return out;
+  const index = tmv3_piAutoShareCustomerIndex_();
+  const headers = {Authorization:'Bearer ' + ScriptApp.getOAuthToken()};
+  records.forEach(function(record) {
+    const customer = tmv3_piAutoShareCustomerProof_(record, index);
+    if (!customer) { out.unproven.push({eventId:record.eventId, title:record.title}); return; }
+    const bare = String(record.eventId).replace(/@google\.com$/i, '');
+    const url = 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent(record.calendarId) + '/events/' + encodeURIComponent(bare);
+    try {
+      const got = UrlFetchApp.fetch(url, {headers:headers, muteHttpExceptions:true});
+      if (got.getResponseCode() !== 200) throw new Error('READ_HTTP_' + got.getResponseCode());
+      const ev = JSON.parse(got.getContentText());
+      const attendees = (ev.attendees || []).map(function(a) { return {email:a.email, optional:!!a.optional, responseStatus:a.responseStatus}; });
+      if (attendees.some(function(a) { return String(a.email) === primaryId; })) { out.events.push({eventId:record.eventId, status:'ALREADY_SHARED'}); return; }
+      attendees.push({email:primaryId});
+      const res = UrlFetchApp.fetch(url + '?sendUpdates=none', {method:'patch', contentType:'application/json', headers:headers, payload:JSON.stringify({attendees:attendees}), muteHttpExceptions:true});
+      if (res.getResponseCode() !== 200) throw new Error('PATCH_HTTP_' + res.getResponseCode() + ': ' + res.getContentText().slice(0, 150));
+      const back = JSON.parse(res.getContentText());
+      if (!(back.attendees || []).some(function(a) { return String(a.email) === primaryId; })) throw new Error('GUEST_READBACK_MISSING');
+      out.shared++;
+      const one = {eventId:record.eventId, status:'SHARED_TO_CF_PREINSPECTS', customer:tmv3_clean_(customer['Customer Number'] || customer['Customer ID']), title:record.title};
+      out.events.push(one);
+      tmv3_audit_('PreInspection', record.eventId, '', 'PI_AUTO_SHARE', 'PASS', JSON.stringify(Object.assign({sendUpdates:'none'}, one)));
+    } catch (err) {
+      out.errors.push({eventId:record.eventId, error:String(err && err.message || err).slice(0, 200)});
+      tmv3_audit_('PreInspection', record.eventId, '', 'PI_AUTO_SHARE', 'ATTENTION', String(err && err.message || err).slice(0, 300));
+    }
+  });
+  if (out.shared) Utilities.sleep(15000); // CF Preinspects shows a new guest copy within seconds (2026-11-23)
+  if (out.errors.length) out.status = 'ATTENTION';
   return out;
 }
 
@@ -2756,6 +2833,8 @@ function tmv3_preInspectionLogSweep_(slot, result) {
     counts:counts,continuation:result.continuation || null,
     error:result.error || '',
     calendarReview:result.calendarReview && result.calendarReview.status || 'NOT_RUN',
+    autoShare:result.autoShare ? {status:result.autoShare.status,candidates:result.autoShare.candidates,shared:result.autoShare.shared,
+      events:result.autoShare.events,unproven:result.autoShare.unproven,errors:result.autoShare.errors} : 'NOT_RUN',
     offShared:result.offShared ? {status:result.offShared.status,checked:result.offShared.checked,
       candidates:result.offShared.candidates,notified:result.offShared.notified,
       events:(result.offShared.events || []).map(function(e) {
@@ -2822,7 +2901,15 @@ function tmv3_runPreInspectionDailySlot_(slot, options) {
     calendarReview = {status:'PI_REVIEW_ATTENTION',error:String(err && err.message || err).slice(0, 400)};
     try { tmv3_audit_('PreInspection', '', '', 'PI_CALENDAR_REVIEW', 'ATTENTION', calendarReview.error); } catch (ignored) {}
   }
-  const deadline = sheetRefreshStarted + 180000;
+  // Proven rep-booked pre-inspections left on Stephen's calendar join CF Preinspects first, so this
+  // slot processes them (operator 2026-11-23). Never on continuation passes.
+  let autoShare = null;
+  if (!continuationPass) {
+    try { autoShare = tmv3_piAutoShareProvenOffShared_(); }
+    catch (err) { autoShare = {status:'ATTENTION', error:String(err && err.message || err).slice(0, 300)}; }
+  }
+  // At least 2 minutes of batch time after the review and auto-share (the chain's next pass continues).
+  const deadline = Math.max(sheetRefreshStarted + 180000, Date.now() + 120000);
   // sweepStart resumes the slot's unfinished sweep, or starts one when pass 1 never got the lock
   // (2026-11-23 11:03: pass 1 LOCK_BUSY, pass 2 found no sweep and the slot checked nothing).
   // Continuation passes skip the missing-details notice scan that pass 1 already ran.
@@ -2877,6 +2964,7 @@ function tmv3_runPreInspectionDailySlot_(slot, options) {
     try { tmv3_audit_('PreInspection', '', '', 'PI_OPERATOR_QUEUE', 'ATTENTION', result.operatorQueue.error); } catch (ignore) {}
   }
   result.calendarReview = calendarReview;
+  if (autoShare) result.autoShare = autoShare;
   if (result.status === 'COMPLETE' && (!result.operatorQueue || result.operatorQueue.status !== 'PI_OPERATOR_VIEW_REFRESHED'))
     result.status = 'ATTENTION_OPERATOR_QUEUE';
   if (result.status === 'COMPLETE' && (!calendarReview ||
