@@ -16040,6 +16040,10 @@ function tmv3_findRecreateSourceTask_(bundle) {
     }
   }
 
+  // Operator rule 2026-11-23: several completed Tasks (e.g. install + GO BACK, Kerry Warren SO580795)
+  // → copy the most recent one. Newest by Due, then Start, then the higher Task ID.
+  if (candidates.length > 1) candidates = [tmv3_mostRecentCompletedTask_(candidates)];
+
   if (candidates.length !== 1) {
     throw new Error(
       'RECREATE requires exactly one completed source Task; found ' +
@@ -16048,6 +16052,15 @@ function tmv3_findRecreateSourceTask_(bundle) {
   }
 
   return tmv3_replacementSourceSnapshot_(candidates[0]['Task ID']);
+}
+
+/** The most recent of several completed Tasks: latest Due, then latest Start, then highest Task ID. */
+function tmv3_mostRecentCompletedTask_(tasks) {
+  const when = function(value) { const t = new Date(value).getTime(); return isFinite(t) ? t : -Infinity; };
+  return tasks.slice().sort(function(a, b) {
+    return (when(b['Due']) - when(a['Due'])) || (when(b['Start']) - when(a['Start'])) ||
+      (Number(b['Task ID'] || 0) - Number(a['Task ID'] || 0));
+  })[0];
 }
 
 function tmv3_buildCreateSource_(bundle, action) {

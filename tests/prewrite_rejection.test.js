@@ -14,3 +14,15 @@ assert.strictEqual(fn('RECREATE requires exactly one completed source Task; foun
 assert.strictEqual(fn('Fresh Location ownership verification expected one Location 58743; found 0.', ''), false);
 assert.strictEqual(fn('VERTICAL_CONVERGENCE_NOT_VERIFIED:PARTIAL', ''), false);
 console.log('prewrite_rejection: all 5 checks passed');
+
+// Operator rule 2026-11-23: several completed source Tasks → the most recent one.
+{
+  const b2 = src.slice(src.indexOf('function tmv3_mostRecentCompletedTask_'));
+  const pick = new Function(b2.slice(0, b2.indexOf('\n}\n') + 3) + '; return tmv3_mostRecentCompletedTask_;')();
+  const kerry = [{'Task ID': 18430, Start: '2026-09-25T13:00:00', Due: '2026-09-25T17:00:00'},
+                 {'Task ID': 18764, Start: '2026-09-29T09:00:00', Due: '2026-09-29T12:00:00'}];
+  assert.strictEqual(pick(kerry)['Task ID'], 18764);
+  assert.strictEqual(pick(kerry.slice().reverse())['Task ID'], 18764);
+  assert.strictEqual(pick([{'Task ID': 5, Due: ''}, {'Task ID': 9, Due: ''}])['Task ID'], 9);
+  console.log('most recent completed source: 3 checks passed');
+}
