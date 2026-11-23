@@ -2092,7 +2092,28 @@ function tmv3_piRecoverPendingEvents_(cycle, records) {
   });
 }
 
-/** Stage D (sweep): durable position by start|eventId survives batch boundaries. */
+/** Short form of an event fingerprint kept in the sweep's coverage map (Script Properties are 9 KB). */
+function tmv3_piSweepFingerprint_(record) {
+  return String(record && record.fingerprint || '').slice(0, 16);
+}
+
+/** True when this sweep already handled the event as it is now: same calendar fingerprint, or a
+ * verified write in the last hour left it at this fingerprint (its own link/title write changes it). */
+function tmv3_piSweepCovered_(sweep, record) {
+  const fp = tmv3_piSweepFingerprint_(record);
+  if (!fp || !sweep || !sweep.covered) return false;
+  if (sweep.covered[record.eventId] === fp) return true;
+  if (!(record.eventId in sweep.covered)) return false;
+  try {
+    const done = JSON.parse(tmv3_piEphemeral_().get('TMV3_PI_DONE_' + tmv3_hash_(record.eventId)) || 'null');
+    return !!(done && tmv3_piSweepFingerprint_(done) === fp && Date.now() - Number(done.at || 0) < 3600000);
+  } catch (ignored) { return false; }
+}
+
+/** Stage D (sweep). Operator rule 2026-11-23: a slot resolves every event that needs it, including
+ * events added or changed after the sweep started and today's events whose time has passed.
+ * The sweep is done only when every current event (today 00:00 onward) has been handled at its
+ * current fingerprint. Today's events go first, then the rest by start time. */
 function tmv3_piSelectSweepBatch_(cycle, selected) {
   const raw = cycle.props.getProperty('TMV3_PI_SWEEP_STATE') || '';
   let prior = null;
@@ -2101,12 +2122,25 @@ function tmv3_piSelectSweepBatch_(cycle, selected) {
     isFinite(new Date(prior.startedAt).getTime()) &&
     cycle.now - new Date(prior.startedAt).getTime() < 86400000;
   if (cycle.options.sweepContinue === true && !valid) return null;
-  cycle.sweep = valid ? prior : {status:'IN_PROGRESS',startedAt:new Date(cycle.now).toISOString(),lastKey:'',processed:0};
+  cycle.sweep = valid ? prior : {status:'IN_PROGRESS',startedAt:new Date(cycle.now).toISOString(),lastKey:'',processed:0,covered:{}};
+  if (!cycle.sweep.covered) {
+    // Sweep started by the previous release (cursor only): everything before its cursor was handled.
+    cycle.sweep.covered = {};
+    selected.forEach(function(r) {
+      if (tmv3_preInspectionSweepKey_(r) <= String(cycle.sweep.lastKey || '')) cycle.sweep.covered[r.eventId] = tmv3_piSweepFingerprint_(r);
+    });
+  }
+  // Drop coverage for events no longer on the calendar so the map stays small.
+  const live = {};
+  selected.forEach(function(r) { live[r.eventId] = true; });
+  Object.keys(cycle.sweep.covered).forEach(function(id) { if (!live[id]) delete cycle.sweep.covered[id]; });
+  const todayText = Utilities.formatDate(new Date(cycle.now), TMV3_TIMEZONE, 'yyyy-MM-dd');
+  const isToday = function(r) { return Utilities.formatDate(new Date(r.start), TMV3_TIMEZONE, 'yyyy-MM-dd') === todayText ? 0 : 1; };
   selected.sort(function(a, b) {
-    const aa = tmv3_preInspectionSweepKey_(a), bb = tmv3_preInspectionSweepKey_(b);
+    const aa = isToday(a) + '|' + tmv3_preInspectionSweepKey_(a), bb = isToday(b) + '|' + tmv3_preInspectionSweepKey_(b);
     return aa < bb ? -1 : aa > bb ? 1 : 0;
   });
-  return selected.filter(function(r) { return tmv3_preInspectionSweepKey_(r) > cycle.sweep.lastKey; });
+  return selected.filter(function(r) { return !tmv3_piSweepCovered_(cycle.sweep, r); });
 }
 
 /** Stage F for one authoritative event: plan → guards → execute → notify → verify. */
@@ -2247,6 +2281,9 @@ function tmv3_piPersistCycle_(cycle, selected, cursor) {
   const result = cycle.result, props = cycle.props, sweep = cycle.sweep;
   if (sweep) {
     if (result.processed) sweep.lastKey = tmv3_preInspectionSweepKey_(selected[result.processed - 1]);
+    // Handled in this batch at the fingerprint it was selected with (deferred events are not counted).
+    sweep.covered = sweep.covered || {};
+    selected.slice(0, result.processed).forEach(function(r) { sweep.covered[r.eventId] = tmv3_piSweepFingerprint_(r); });
     sweep.processed = Number(sweep.processed || 0) + result.processed;
     const remaining = Math.max(0, selected.length - result.processed);
     sweep.status = remaining ? 'IN_PROGRESS' : (cycle.pending.length ? 'SCANNED_WITH_PENDING_REVIEW' : 'COMPLETE');

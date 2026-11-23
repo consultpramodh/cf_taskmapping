@@ -150,8 +150,10 @@ const TMV3_SLOT_CHAIN_KEY = 'TMV3_SLOT_CHAIN';
 const TMV3_SLOT_CHAIN_NEXT_HANDLER = 'tmv3_slotChainNext';
 // Gap between one workflow finishing and the next one starting.
 const TMV3_SLOT_CHAIN_GAP_MS = 60000;
-// A step still marked RUNNING after this long was killed by the Apps Script time limit: move on.
-const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 35 * 60000;
+// A step still marked RUNNING after this long was killed by the time limit. Passes are built to end in
+// about 4-6 minutes, so 12 minutes means the pass died; the chain then reruns the same workflow
+// (was 35 minutes, which stalled the 2026-11-23 10:08 PreInspection pass for half an hour).
+const TMV3_SLOT_CHAIN_STEP_TIMEOUT_MS = 12 * 60000;
 // Operator rule 2026-11-23: a slot resolves every event that needs it at that slot; nothing is left for
 // the next slot. A workflow whose sweep still has events after one run is run again (its sweep resumes
 // from its cursor), each pass in its own execution, before the chain moves to the next workflow.

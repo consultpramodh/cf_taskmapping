@@ -16183,7 +16183,7 @@ function tmv3_missingLinksScan_() {
       if (!cal) { out.unreadable.push(v + ': ' + (calCfg.calendarName || calCfg.technician || calCfg.calendarId)); return; }
       cal.getEvents(from, to).forEach(function(ev) {
         if (ev.isAllDayEvent && ev.isAllDayEvent()) return;
-        if (ev.getEndTime().getTime() < now) return;
+        // Today's appointments stay listed after they end: an unresolved event today is still unresolved (operator 2026-11-23).
         const desc = String(ev.getDescription() || '');
         if (/TaskID=\d+/i.test(desc)) return;
         const title = String(ev.getTitle() || ''), loc = String(ev.getLocation() || '');
